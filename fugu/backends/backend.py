@@ -81,6 +81,7 @@ class PortDataIterator:
     def __init__(self, node: dict):
         self.neurons = None
         ports = node.get('ports')
+        self.ports = None
         if ports:  # prepare top-level iterator
             self.ports = iter(ports.values())
             try:
