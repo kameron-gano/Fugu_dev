@@ -88,7 +88,7 @@ class dense_layer_1d(Brick):
         output_lists = [[]]
         print("Num of output neurons", num_output_neurons)
         for id in np.arange(num_output_neurons):
-            graph.add_node(f'{self.name}d{id}', index=id, threshold=self.thresholds[id], decay=1.0, p=1.0, potential=0.0)
+            graph.add_node(f'{self.name}d{id}', index=id, threshold=self.thresholds[id], decay=0.0, p=1.0, potential=0.0)
             output_lists[0].append(f'{self.name}d{id}')
 
         # Collect Inputs
