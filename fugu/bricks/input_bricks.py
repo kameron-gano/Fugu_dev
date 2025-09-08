@@ -302,8 +302,11 @@ class Vector_Input(InputBrick):
                            delay=time_length - 1)
 
         self.index_map = np.ndindex(self.vector.shape[:-1])
+        print("Index map:", self.index_map)
         for i, index in enumerate(self.index_map):
+            # index = tuple(int(x) if hasattr(x, 'item') else x for x in index)
             neuron_name = self.generate_neuron_name(str(index))
+            print("Building neuron:", neuron_name, " with index:", index)
             graph.add_node(neuron_name,
                            index=index,
                            threshold=0.0,

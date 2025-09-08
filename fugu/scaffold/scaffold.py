@@ -187,7 +187,7 @@ class Scaffold:
             built_graph.nodes[new_node]['brick'] = tag
         return built_graph
 
-    def lay_bricks(self, verbose=0):
+    def lay_bricks(self, verbose=1):
         """
         Build a computational graph that can be used by the backend.
 

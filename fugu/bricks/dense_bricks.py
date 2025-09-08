@@ -5,6 +5,9 @@ import numpy as np
 from .bricks import Brick
 from .metadata_utils import is_metadata_key_present, get_metadata_key_value
 
+
+
+
 class dense_layer_1d(Brick):
     "Dense Layer brick"
     """
@@ -15,10 +18,10 @@ class dense_layer_1d(Brick):
     """
 
     def __init__(self, output_shape, weights, thresholds, name=None, layer_name="dense_1d"):
-        super().__init__()
+        super(dense_layer_1d, self).__init__(name)
         self.is_built = False
         self.name = name
-        self.supported_codings = ["binary-L"]
+        self.supported_codings = ["binary-L", "Raster"]
         self.weights = np.array(weights)
         self.thresholds = np.array(thresholds)
         self.metadata = {'isNeuralNetworkLayer': True, 'layer_name': layer_name, 'output_shape': output_shape}
@@ -47,18 +50,20 @@ class dense_layer_1d(Brick):
         #     self.metadata = {**metadata[0], **self.metadata}
         # else:
         #     self.metadata = {**metadata, **self.metadata}
-        if 'output_shape' in metadata[0]: self.input_shape = metadata[0]['output_shape']
-
-        assert hasattr(self, 'input_shape')
+    # Assign input shape from previous layer (input_lists[0])
+        self.input_shape = (len(input_lists[0]),)
+        print(self.input_shape)
         self.metadata['input_shape'] = self.input_shape
 
         output_codings = [input_codings[0]]
 
-        complete_node = self.name + "_complete"
-        begin_node = self.name + "_begin"
+        # complete_node = self.name + "_complete"
+        # begin_node = self.name + "_begin"
+        begin_node = self.generate_neuron_name('begin')
+        complete_node = self.generate_neuron_name('complete')
 
         graph.add_node(begin_node, index=-1, threshold=0.0, decay=0.0, p=1.0, potential=0.0)
-        graph.add_node(complete_node, index=0, threshold=0.9, decay=0.0, p=1.0, potential=0.0)
+        graph.add_node(complete_node, index=0, threshold=0.0, decay=0.0, p=1.0, potential=0.0)
 
         graph.add_edge(control_nodes[0]["complete"], complete_node, weight=0.0, delay=1)
         graph.add_edge(control_nodes[0]["begin"], begin_node, weight=0.0, delay=1)
@@ -74,6 +79,8 @@ class dense_layer_1d(Brick):
         if not hasattr(self.thresholds, '__len__') and (not isinstance(self.thresholds, str)):
             self.thresholds = self.thresholds * np.ones(self.output_shape)
         else:
+            if not isinstance(self.thresholds, np.ndarray):
+                self.thresholds = np.array(self.thresholds)
             if self.thresholds.shape != self.output_shape:
                 raise ValueError(f"Threshold shape {self.thresholds.shape} does not equal the output neuron shape {self.output_shape}.")
 
@@ -81,6 +88,8 @@ class dense_layer_1d(Brick):
         if not hasattr(self.weights, '__len__') and (not isinstance(self.weights, str)):
             self.weights = self.weights * np.ones((output_size, input_size), dtype=float)
         else:
+            if not isinstance(self.weights, np.ndarray):
+                self.weights = np.array(self.weights)
             if self.weights.shape != (output_size, input_size):
                 raise ValueError(f"Weights shape {self.weights.shape} does not equal the necessary shape {(output_size, input_size)}.")
             
@@ -88,16 +97,18 @@ class dense_layer_1d(Brick):
         output_lists = [[]]
         print("Num of output neurons", num_output_neurons)
         for id in np.arange(num_output_neurons):
-            graph.add_node(f'{self.name}d{id}', index=id, threshold=self.thresholds[id], decay=0.0, p=1.0, potential=0.0)
-            output_lists[0].append(f'{self.name}d{id}')
+            placeholder = self.name + f'd{id}'
+            graph.add_node(placeholder, index=id, threshold=self.thresholds[id], decay=0.0, p=1.0, potential=0.0)
+            output_lists[0].append(placeholder)
 
         # Collect Inputs
         prev_layer = input_lists[0]
+        print("Prev_layer:", prev_layer)
 
         # Construct edges connecting input and output nodes
         for i in np.arange(num_output_neurons):  # loop over output neurons
             for k in np.arange(num_input_neurons): # loop over input neurons
-                graph.add_edge(prev_layer[k], f'{self.name}d{i}', weight=self.weights[i,k], delay=1)
+                graph.add_edge(prev_layer[k], f'{self.brick_tag}:{self.name}d{i}', weight=self.weights[i,k], delay=1)
                 logging.debug(f" p{k} --> d{i}")
 
         self.is_built = True

@@ -1,4 +1,5 @@
 from collections import deque
+import re
 
 
 def CalculateSpikeTimes(circuit, main_key='timestep'):
@@ -21,10 +22,13 @@ def CalculateSpikeTimes(circuit, main_key='timestep'):
         if ('layer' in circuit.nodes[node]) and (
             circuit.nodes[node]['layer'] == 'input')
     ]
+    print("Inside CalculateSpikeTimes", [ circuit.nodes[node]['layer'] for node in circuit.nodes])
     max_steps = 0
     for input_node in input_nodes:
         for timestep, spike_list in enumerate(
                 circuit.nodes[input_node]['brick']):
+            print("Input node:", input_node, "Timestep:", timestep, "Spike list:", spike_list)
+            
             if timestep > max_steps:
                 max_steps = timestep
     if main_key == 'timestep':
@@ -34,7 +38,10 @@ def CalculateSpikeTimes(circuit, main_key='timestep'):
             for timestep, spike_list in enumerate(
                     circuit.nodes[input_node]['brick']):
                 if len(spike_list) > 0:
+                    spike_list = [clean_neuron_name(str(x)) for x in spike_list]
                     initial_spikes[timestep].extend(spike_list)
+                    print("Initial Spikes", initial_spikes)
+                    print("Building timestep:", timestep, " with spikes:", spike_list)
     elif main_key == 'neuron_name':
         for input_node in input_nodes:
             for timestep, spike_list in enumerate(
@@ -46,4 +53,13 @@ def CalculateSpikeTimes(circuit, main_key='timestep'):
     else:
         raise ValueError("main_key argument must be 'timestep' or 'neuron_name', not {}".format(main_key))
 
+    print("Inside CalculateSpikeTimes initial_spikes:", initial_spikes)
     return initial_spikes
+
+def clean_neuron_name(name):
+    """
+    Cleans a neuron name string by removing numpy type annotations inside parentheses.
+    Example: "Input-0:(np.int64(0),)" -> "Input-0:(0,)"
+    """
+    # Replace patterns like np.int64(123) with just 123
+    return re.sub(r'np\.\w+\((\-?\d+)\)', r'\1', name)
