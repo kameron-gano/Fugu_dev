@@ -64,7 +64,7 @@ class dense_layer_1d(Brick):
         graph.add_edge(control_nodes[0]["begin"], begin_node, weight=0.0, delay=1)
 
         num_input_neurons = len(input_lists[0])
-        num_output_neurons = num_input_neurons
+        num_output_neurons = np.prod(self.output_shape)
         
         output_size = np.prod(self.output_shape)
         input_size = np.prod(self.input_shape)
