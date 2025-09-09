@@ -78,7 +78,7 @@ class snn_Backend(Backend):
         self.brick_to_number = scaffold.brick_to_number
         self.record          = compile_args.get('record',     False)
         self.ds_format       = compile_args.get('ds_format',  True)
-        self.debug_mode      = compile_args.get('debug_mode', False)
+        self.debug_mode      = compile_args.get('debug_mode', True)
         self._build_network()
 
     def run(self, n_steps=10, return_potentials=False):
@@ -143,6 +143,7 @@ class snn_Backend(Backend):
             properties: dictionary of properties for bricks
         """
         for brick in properties:
+            # print(f"Properties being set for brick {brick}: ", properties[brick])
             if brick != 'compile_args':
                 brick_id = self.brick_to_number[brick]
                 changes = self.fugu_circuit.nodes[brick_id]['brick'].set_properties(properties[brick])

@@ -29,6 +29,7 @@ class Scaffold:
                   metadata=None,
                   name=None,
                   output=False):
+        
         """
         Add a brick to the scaffold.
         Newer code that calls this function should only pass the brick itself.
@@ -196,6 +197,7 @@ class Scaffold:
         Returns:
             built_graph: networkX diGraph
         """
+
         self.graph = nx.DiGraph()
 
         # Handle Input Nodes

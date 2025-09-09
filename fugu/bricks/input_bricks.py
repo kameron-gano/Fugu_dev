@@ -187,11 +187,13 @@ class Vector_Input(InputBrick):
             for spike in range(num_spikes):
                 idx_to_build = deque()
                 for dimension in range(len(local_idxs)):
-                    idx_to_build.append(local_idxs[dimension][spike])
+                    idx_to_build.append(int(local_idxs[dimension][spike]))
                 global_idxs.append(tuple(idx_to_build))
             spiking_neurons = [
                 self.generate_neuron_name(str(idx)) for idx in global_idxs
             ]
+            # print("Global indexes: ", global_idxs)
+            print("From inside __next__: ", spiking_neurons)
             return spiking_neurons
         else:
             raise StopIteration
@@ -311,6 +313,10 @@ class Vector_Input(InputBrick):
                            p=1.0)
             data.neurons.append(neuron_name)
 
+            
+
+            print("Neuron name in Vector Input:", neuron_name)
+        print("data.neurons: ", data.neurons)
         self.is_built = True
         return result
 
