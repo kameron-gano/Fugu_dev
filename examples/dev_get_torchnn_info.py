@@ -32,11 +32,12 @@ def group_torch_layers(model):
 def build_fugu_network(layer_dicts, input_data):
     sc = Scaffold()
 
-    # Ensure (n_in, T) and 0/1 ints
     spikes = np.asarray(input_data, dtype=int)
     assert spikes.ndim == 2
 
-    sc.add_brick(Vector_Input(spikes, coding="binary-L", name="Input", time_dimension=True))
+    inp = sc.add_brick(Vector_Input(spikes, coding="binary-L", name="Input", time_dimension=True))
+
+    print(inp)
 
     for i, layer in enumerate(layer_dicts):
         out_sz = int(layer["output_size"])
@@ -50,10 +51,10 @@ def build_fugu_network(layer_dicts, input_data):
         T = np.full(out_sz, float(T), dtype=float) if np.isscalar(T) else np.asarray(T, dtype=float).reshape(-1)
 
         beta = float(layer["beta"])
-        decay = 1.0 - beta                                   # map beta → decay
+        decay = 1.0 - beta                                  
 
         brick = dense_layer_1d(
-            output_shape=(out_sz, 1),
+            output_shape=(out_sz,),
             weights=W,
             thresholds=T,
             biases=b,
@@ -64,3 +65,10 @@ def build_fugu_network(layer_dicts, input_data):
 
     sc.lay_bricks()
     return sc
+
+def get_output_neuron_numbers(fugu_net):
+    output_neuron_numbers = []
+    for node, attrs in fugu_net.graph.nodes(data=True):
+        if "Output" in node and "begin" not in node and "complete" not in node:
+            output_neuron_numbers.append(attrs["neuron_number"])
+    return output_neuron_numbers
