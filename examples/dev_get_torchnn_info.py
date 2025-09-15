@@ -35,9 +35,7 @@ def build_fugu_network(layer_dicts, input_data):
     spikes = np.asarray(input_data, dtype=int)
     assert spikes.ndim == 2
 
-    inp = sc.add_brick(Vector_Input(spikes, coding="binary-L", name="Input", time_dimension=True))
-
-    print(inp)
+    sc.add_brick(Vector_Input(spikes, coding="binary-L", name="Input", time_dimension=True))
 
     for i, layer in enumerate(layer_dicts):
         out_sz = int(layer["output_size"])
@@ -61,7 +59,7 @@ def build_fugu_network(layer_dicts, input_data):
             decay=decay,
             name=("Output" if layer["is_output"] else f"Layer{i}"),
         )
-        prev = sc.add_brick(brick, input_nodes=[-1], output=layer["is_output"])
+        sc.add_brick(brick, input_nodes=[-1], output=layer["is_output"])
 
     sc.lay_bricks()
     return sc
