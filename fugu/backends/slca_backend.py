@@ -1,14 +1,13 @@
 from collections import deque
 from warnings import warn
 
-from matplotlib.pylab import Any
 from typing import Optional, Dict, Any
 import fugu.simulators.SpikingNeuralNetwork as snn
 
 from .backend import Backend, PortDataIterator
 from ..utils.export_utils import results_df_from_dict
 from ..utils.misc import CalculateSpikeTimes
-import snn_Backend
+from .snn_backend import snn_Backend
 import numpy as np
 
 class slca_Backend(snn_Backend):
@@ -75,33 +74,47 @@ class slca_Backend(snn_Backend):
         # Let the parent build the physical SNN (neurons/synapses).
         # We won't rely on presynaptic synapses; we push Δv via bias per step.
         super().compile(scaffold, compile_args)
-        # Configure LIF shells: no leak, known threshold/reset
-        for n in self.nn.nrns.values():
-            # remove leak; threshold 1, reset 0 are assumed by your graph defaults
+        for name, n in self.nn.nrns.items():
+            if "begin" in name or "complete" in name:
+                continue
             n.leakage_constant = 1.0
+        # Configure LIF shells: no leak, known threshold/reset
 
     def slca_step(self):
         # update decays of inhibitory spikes based on spike history
         self.inhibition = self.decay*self.inhibition + self.spikes_prev
 
         # update soma current
-        self.soma_current = self.b - (self.W @ self.inhibition)
+        self.soma_current = self.b - (self.W @ (self.inhibition / self.tau))
 
         # integrate the change in soma current for this time step
         self.int_soma_current += self.soma_current * self.dt
 
-        # hack each LIFNeuron's bias to update its membrane potential
-        dV = self.dt * (self.soma_current - self.lam)
-        for i, (name, n) in enumerate(self.nn.nrns.items()):
-            n._b = float(dV[i])
+        # Direct voltage integration: v += dt * (mu - lam)
+        for name, n in self.nn.nrns.items():
+            if "begin" in name or "complete" in name:
+                continue
+            # Extract neuron index from name
+            idx = int(name.split('_')[-1])
+            # Direct S-LCA voltage update
+            dv = self.dt * (self.soma_current[idx] - self.lam)
+            n.v += dv
+            # Check for spike and reset
+            if n.v >= n.threshold:
+                n.spike_hist.append(True)
+                n.v = 0.0  # Reset
+            else:
+                n.spike_hist.append(False)
         
-        # run the nerual network for a single time step
-        _ = self.nn.run(n_steps=1, debug_mode=self.debug_mode, record_potentials=False)
+        # Don't run the neural network - we're handling integration manually
 
-        # now we need to figure out what neurons spiked
+        # Extract spike information from what we just computed
         new_spikes = np.zeros(self.N, dtype=float)
-        for i, (name, n) in enumerate(self.nn.nrns.items()):
-            new_spikes = 1.0 if (len(n.spike_hist) and n.spike_hist[-1]) else 0.0
+        for name, n in self.nn.nrns.items():  
+            if "begin" in name or "complete" in name:
+                continue
+            idx = int(name.split('_')[-1])
+            new_spikes[idx] = 1.0 if (n.spike_hist and n.spike_hist[-1]) else 0.0
         self.spikes_prev = new_spikes
 
     def run(self, n_steps: Optional[int] = None, return_readout: bool = True):
@@ -120,9 +133,9 @@ class slca_Backend(snn_Backend):
         steps = int(self.T_steps if n_steps is None else n_steps)
 
         int_soma_current_at_t0 = None
-        self.r[:] = 0.0
-        self.mu[:] = 0.0
-        self.mu_int[:] = 0.0
+        self.spikes_prev[:] = 0.0
+        self.soma_current[:] = 0.0
+        self.int_soma_current[:] = 0.0
         self.spikes_prev[:] = 0.0
 
         for n in self.nn.nrns.values():
@@ -130,33 +143,20 @@ class slca_Backend(snn_Backend):
             n.spike_hist.clear()
 
         for k in range(steps):
-            self._slca_step()
+            self.slca_step()
             if int_soma_current_at_t0 is None and k >= self.t0_steps:
                 int_soma_current_at_t0 = self.int_soma_current.copy()
 
         if int_soma_current_at_t0 is None:
             int_soma_current_at_t0 = np.zeros_like(self.int_soma_current)
 
-        # Read spike counts (rates baseline)
-        counts = np.array([sum(n.spike_hist) for n in self.nn.nrns.values()], dtype=int)
+        T_tail = (steps - self.t0_steps) * self.dt
+        mu_tail = (self.int_soma_current - int_soma_current_at_t0) / max(T_tail, 1e-12)
+        a_tail = np.maximum(0.0, mu_tail - self.lam)
+
+        counts = np.array([sum(self.nn.nrns[n].spike_hist) for n in self.nn.nrns], dtype=int)
         T_sec = steps * self.dt
-        spike_rate = counts / max(T_sec, 1e-12)
+        a_rate = counts / max(T_sec, 1e-12)
 
-        # Preferred readout: tail-window Tλ(u)
-        avg_soma_current = (self.int_soma_current - int_soma_current_at_t0) / max((steps - self.t0_steps) * self.dt, 1e-12)
-        spike_rate_tail = np.maximum(0.0, avg_soma_current - self.lam)
-
-        # Optional reconstruction if Φ was provided
-        x_hat = self.Phi @ spike_rate_tail
-
-        if return_readout:
-            return {
-                "a_tail": spike_rate_tail,          # best estimator of a
-                "a_rate": spike_rate,          # naive spike-rate estimate
-                "counts": counts,
-                "x_hat": x_hat.reshape(-1),
-                "b": self.b, "W": self.W
-            }
-        else:
-            # fall back to the parent’s dataframe-style spike export
-            return super().run(n_steps=1, return_potentials=False)
+        x_hat = self.Phi @ a_tail
+        return {"a_tail": a_tail, "a_rate": a_rate, "counts": counts, "x_hat": x_hat, "b": self.b, "W": self.W}

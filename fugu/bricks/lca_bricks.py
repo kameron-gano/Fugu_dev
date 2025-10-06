@@ -1,54 +1,84 @@
 from fugu.bricks import Brick
+from fugu.scaffold.port import PortSpec, ChannelSpec
 import numpy as np
 
 class LCABrick(Brick):
     def __init__(self, Phi, **kwargs):
         super().__init__(**kwargs)
         self.Phi = Phi
+        self.supported_codings = ['Raster', 'Undefined']
 
-    def normalize_columns(A):
+    @classmethod
+    def input_ports(cls) -> dict[str, PortSpec]:
+        """LCABrick doesn't require inputs - it generates sparse codes."""
+        return {}
+
+    @classmethod  
+    def output_ports(cls) -> dict[str, PortSpec]:
+        """LCABrick outputs sparse activation codes."""
+        port = PortSpec(name='output')
+        port.channels['data'] = ChannelSpec(name='data', coding=['Raster'])
+        port.channels['complete'] = ChannelSpec(name='complete')
+        return {port.name: port}
+
+    def normalize_columns(self, A):
         """ Normalize columns of A to unit norm. """
         norms = np.linalg.norm(A, axis=0)
         norms[norms == 0] = 1.0
         return A / norms
                 
 
-    def build2(self, graph):
-
-        new_begin = f"LCA_begin"
-        new_complete = f"LCA_complete"
-
-        # TODO: ADD IN EDGES FOR CONTROL NODES 
-        # TODO: MAKE SURE RETURN VALUES ARE CORRECT AND COMPLETE
+    def build2(self, graph, inputs: dict = {}):
+        from ..scaffold.port import PortData, ChannelSpec, PortSpec
         
-        # Begin node: fires when upstream begin fires (delay 1)
-        graph.add_node(new_begin, index=-2, threshold=0.0, decay=0.0, p=1.0, potential=0.0, layer='control')
-        # Complete node: fires after both upstream completes (OR/sum behavior)
-        graph.add_node(new_complete, index=-1, threshold=0.9, decay=0.0, p=1.0, potential=0.0, layer='control')
-
-
         # Normalize dictionary columns
         Phi = self.normalize_columns(self.Phi)
-        N = Phi.shape[1]
+        N = Phi.shape[1]  # Number of dictionary elements
 
-        # Create neurons
+        # Create complete control node
+        complete_node_name = self.generate_neuron_name('complete')
+        graph.add_node(complete_node_name,
+                       index=-1,
+                       threshold=0.0,
+                       decay=0.0,
+                       p=1.0,
+                       potential=0.0)
+
+        # Create LCA neurons
+        neuron_names = []
         for i in range(N):
-            name = f"neuron_{i}"
+            neuron_name = self.generate_neuron_name(f"neuron_{i}")
+            neuron_names.append(neuron_name)
             graph.add_node(
-                name,
+                neuron_name,
+                index=i,
                 threshold=1.0,
                 potential=0.0,
                 p=1.0,
             )
 
-        # Build connections (W = ΦᵀΦ)
+        # Build inhibitory connections (W = ΦᵀΦ - I)
         W = Phi.T @ Phi
-        np.fill_diagonal(W, 0.0)
+        np.fill_diagonal(W, 0.0)  # Remove self-connections
 
-        # add edges to graph
+        # Add lateral inhibition edges
         for i in range(N):
             for j in range(N):
-                if i != j:
-                    graph.add_edge(f"neuron_{j}", f"neuron_{i}", weight=-W[i, j])
+                if i != j:  
+                    graph.add_edge(neuron_names[i], neuron_names[j], 
+                                 weight=0, delay=1)
 
-        return graph
+        # Create output port data using the proper pattern
+        from ..scaffold.port import PortUtil, ChannelData
+        result = PortUtil.make_ports_from_specs(LCABrick.output_ports())
+        output_port = result['output']
+        
+        # Set the data channel neurons
+        data_channel = output_port.channels['data']
+        data_channel.neurons = neuron_names
+        
+        # Set the complete channel neurons  
+        complete_channel = output_port.channels['complete']
+        complete_channel.neurons = [complete_node_name]
+        
+        return result
