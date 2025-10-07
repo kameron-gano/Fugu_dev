@@ -510,7 +510,7 @@ class CompetitiveNeuron(LIFNeuron):
             self.spike = False
             # No leakage for S-LCA - pure integrator
 
-        # Step 6: Record spike history
+        # Record spike history
         self.spike_hist.append(self.spike)
 
 """

@@ -104,26 +104,20 @@ class slca_Backend(snn_Backend):
         # Step the neural network
         self.nn.step()
         
-        # Extract current spikes and update S-LCA state
-        current_spikes = np.zeros(self.N)
+
         lca_neuron_idx = 0
         for name, neuron in self.nn.nrns.items():
             if "neuron_" in name and "complete" not in name:
-                current_spikes[lca_neuron_idx] = float(neuron.spike)
                 # Update soma current for integration
                 self.soma_current[lca_neuron_idx] = neuron.soma_current if hasattr(neuron, 'soma_current') else 0.0
                 lca_neuron_idx += 1
         
-        # Update inhibition traces: r[t] = decay * r[t-1] + spikes[t-1]
-        self.inhibition = self.decay * self.inhibition + self.spikes_prev
         
         # Integrate soma currents
         self.int_soma_current += self.soma_current * self.dt
         
-        # Store spikes for next step
-        self.spikes_prev[:] = current_spikes
 
-    def run(self, n_steps: Optional[int] = None, return_readout: bool = True):
+    def run(self, n_steps: Optional[int] = None):
         """
         Run S-LCA in this backend.
 
@@ -139,14 +133,9 @@ class slca_Backend(snn_Backend):
         steps = int(self.T_steps if n_steps is None else n_steps)
 
         int_soma_current_at_t0 = None
-        self.spikes_prev[:] = 0.0
         self.soma_current[:] = 0.0
         self.int_soma_current[:] = 0.0
-        self.spikes_prev[:] = 0.0
 
-        for n in self.nn.nrns.values():
-            n.v = 0.0
-            n.spike_hist.clear()
 
         for k in range(steps):
             # Capture initial state after t0_steps for tail readout
