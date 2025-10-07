@@ -75,7 +75,7 @@ class LCABrick(Brick):
 
         for i in range(N):
             for j in range(N):
-                if i != j and W[j, i] > 0:  # Only add significant connections
+                if i != j and W[i, j] > 0:  # Only add significant connections
                     graph.add_edge(neuron_names[i], neuron_names[j], 
                                  weight=W[i, j],  # Inhibitory weight: i inhibits j with strength W[j,i]
                                  delay=1)
