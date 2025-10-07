@@ -69,12 +69,10 @@ class LCABrick(Brick):
                 neuron_type='CompetitiveNeuron'  # Specify S-LCA neuron type
             )
 
-        # Build lateral inhibitory connections (W = ΦᵀΦ - I)
+        # Build lateral inhibitory connections 
         W = Phi.T @ Phi
         np.fill_diagonal(W, 0.0)  # Remove self-connections
 
-        # Add lateral inhibition edges with proper weights
-        # When neuron i spikes, it sends inhibitory signals to neurons j
         for i in range(N):
             for j in range(N):
                 if i != j and W[j, i] > 0:  # Only add significant connections
