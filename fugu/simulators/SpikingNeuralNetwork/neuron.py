@@ -367,3 +367,187 @@ if __name__ == "__main__":
     for i, _ in enumerate(range(7)):
         n0.update_state()
         print(f"Time {i}: {n0.spike}")
+
+class CompetitiveNeuron(LIFNeuron):
+    """
+    Competitive neuron implementing Sparse Local Competitive Algorithm (S-LCA) dynamics.
+    
+    Implements the following methodology:
+    
+    Let the soma current at time t be:
+    
+        u_i[t] = b_i - sum_{j != i} w_ij * r_j[t]
+    
+    where:
+        - b_i is the bias (feedforward drive) for neuron i
+        - w_ij is the lateral inhibitory weight from neuron j to neuron i  
+        - r_j[t] is the synaptic trace of neuron j at time t
+    
+    The synaptic trace follows exponential dynamics:
+    
+        r_j[t] = decay * r_j[t-1] + spike_j[t-1]
+    
+    where:
+        - decay = exp(-dt/tau_syn) is the synaptic decay factor
+        - spike_j[t-1] is the spike of neuron j at previous time step
+        - tau_syn is the synaptic time constant
+    
+    The membrane voltage evolves as:
+    
+        dv_i/dt = u_i[t] - lambda
+    
+    where lambda is the sparsity threshold. The neuron spikes when v_i >= threshold
+    and resets to 0.
+    """
+
+    def __init__(
+        self,
+        name=None,
+        threshold=1.0,
+        reset_voltage=0.0,
+        voltage=0.0,
+        bias=0.0,
+        dt=1e-3,
+        tau_syn=1.0,
+        lam=0.1,
+        record=False,
+    ):
+        """
+        Constructor for CompetitiveNeuron (S-LCA dynamics).
+
+        Parameters:
+            name (str): Neuron name. Default is None.
+            threshold (float): Spike threshold. Default is 1.0.
+            reset_voltage (float): Voltage after spike (usually 0.0). Default is 0.0.
+            voltage (float): Initial membrane voltage. Default is 0.0.
+            bias (float): Feedforward bias current b_i. Default is 0.0.
+            dt (float): Time step for integration. Default is 1e-3.
+            tau_syn (float): Synaptic time constant. Default is 1.0.
+            lam (float): Sparsity threshold lambda. Default is 0.1.
+            record (bool): Whether to record for probes. Default is False.
+        """
+        
+        # Convert inputs to float
+        threshold = int_to_float(threshold)
+        reset_voltage = int_to_float(reset_voltage)
+        voltage = int_to_float(voltage)
+        bias = int_to_float(bias)
+        dt = int_to_float(dt)
+        tau_syn = int_to_float(tau_syn)
+        lam = int_to_float(lam)
+        
+        # Validate types
+        validate_type(name, str_types)
+        validate_type(threshold, float_types)
+        validate_type(reset_voltage, float_types)
+        validate_type(voltage, float_types)
+        validate_type(bias, float_types)
+        validate_type(dt, float_types)
+        validate_type(tau_syn, float_types)
+        validate_type(lam, float_types)
+        validate_type(record, bool_types)
+        
+        # Initialize parent class with no leakage (leakage_constant=1.0)
+        # and deterministic spiking (p=1.0)
+        super(CompetitiveNeuron, self).__init__(
+            name=name,
+            threshold=threshold,
+            reset_voltage=reset_voltage,
+            leakage_constant=1.0,  # No leak - pure integrator
+            voltage=voltage,
+            bias=bias,
+            p=1.0,  # Deterministic spiking
+            record=record
+        )
+        
+        # S-LCA specific parameters
+        self.dt = dt
+        self.tau_syn = tau_syn
+        self.lam = lam
+        self.decay = np.exp(-dt / tau_syn)  # Synaptic decay factor
+        
+        # State variables for S-LCA
+        self.soma_current = 0.0  # u_i[t]
+        self.lateral_inhibition = 0.0  # Sum of weighted synaptic traces
+
+    def update_state(self):
+        """
+        Updates S-LCA neuron state for one time step.
+        
+        Implements:
+        1. Update synaptic traces: r_j[t] = decay * r_j[t-1] + spike_j[t-1]
+        2. Compute soma current: u_i[t] = b_i - sum_{j != i} w_ij * r_j[t]
+        3. Integrate voltage: dv_i/dt = u_i[t] - lambda
+        4. Check for spike and reset
+
+        Returns:
+            None
+        """
+        
+        # collect synaptic inputs (weighted spikes from other neurons)
+        synaptic_input = 0.0
+        if self.presyn:
+            for s in self.presyn:
+                if len(s._hist) > 0:
+                    synaptic_input += s._hist[0]  # This includes weights from synapses
+
+        # r_j[t] = decay * r_j[t-1] + spike_j[t-1]
+        self.lateral_inhibition = self.decay * self.lateral_inhibition + synaptic_input
+
+
+        # u_i[t] = b_i - lateral_inhibition (synaptic inputs are already weighted)
+        self.soma_current = self._b - self.lateral_inhibition
+
+        # dv_i/dt = u_i[t] - lambda
+        dv = self.dt * (self.soma_current - self.lam)
+        self.v += dv
+        
+        # spike detection and reset
+        if self.v >= self._T:
+            self.spike = True
+            self.v = self._R  # Reset voltage (typically 0.0)
+        else:
+            self.spike = False
+            # No leakage for S-LCA - pure integrator
+
+        # Step 6: Record spike history
+        self.spike_hist.append(self.spike)
+
+"""
+    def slca_step(self):
+        # update decays of inhibitory spikes based on spike history
+        self.inhibition = self.decay*self.inhibition + self.spikes_prev
+
+        # update soma current
+        self.soma_current = self.b - (self.W @ (self.inhibition / self.tau))
+
+        # integrate the change in soma current for this time step
+        self.int_soma_current += self.soma_current * self.dt
+
+        # Direct voltage integration: v += dt * (mu - lam)
+        for name, n in self.nn.nrns.items():
+            if "begin" in name or "complete" in name:
+                continue
+            # Extract neuron index from name
+            idx = int(name.split('_')[-1])
+            # Direct S-LCA voltage update
+            dv = self.dt * (self.soma_current[idx] - self.lam)
+            n.v += dv
+            # Check for spike and reset
+            if n.v >= n.threshold:
+                n.spike_hist.append(True)
+                n.v = 0.0  # Reset
+            else:
+                n.spike_hist.append(False)
+        
+        # Don't run the neural network - we're handling integration manually
+
+        # Extract spike information from what we just computed
+        new_spikes = np.zeros(self.N, dtype=float)
+        for name, n in self.nn.nrns.items():  
+            if "begin" in name or "complete" in name:
+                continue
+            idx = int(name.split('_')[-1])
+            new_spikes[idx] = 1.0 if (n.spike_hist and n.spike_hist[-1]) else 0.0
+        self.spikes_prev = new_spikes
+"""

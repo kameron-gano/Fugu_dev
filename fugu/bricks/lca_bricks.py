@@ -3,9 +3,13 @@ from fugu.scaffold.port import PortSpec, ChannelSpec
 import numpy as np
 
 class LCABrick(Brick):
-    def __init__(self, Phi, **kwargs):
+    def __init__(self, Phi, lam=0.1, dt=1e-3, tau_syn=1.0, threshold=1.0, **kwargs):
         super().__init__(**kwargs)
         self.Phi = Phi
+        self.lam = lam  # Sparsity threshold (lambda)
+        self.dt = dt  # Time step
+        self.tau_syn = tau_syn  # Synaptic time constant
+        self.threshold = threshold  # Spike threshold
         self.supported_codings = ['Raster', 'Undefined']
 
     @classmethod
@@ -34,6 +38,7 @@ class LCABrick(Brick):
         # Normalize dictionary columns
         Phi = self.normalize_columns(self.Phi)
         N = Phi.shape[1]  # Number of dictionary elements
+        M = Phi.shape[0]  # Dimensionality of signals
 
         # Create complete control node
         complete_node_name = self.generate_neuron_name('complete')
@@ -44,7 +49,7 @@ class LCABrick(Brick):
                        p=1.0,
                        potential=0.0)
 
-        # Create LCA neurons
+        # Create S-LCA neurons with proper parameters
         neuron_names = []
         for i in range(N):
             neuron_name = self.generate_neuron_name(f"neuron_{i}")
@@ -52,21 +57,30 @@ class LCABrick(Brick):
             graph.add_node(
                 neuron_name,
                 index=i,
-                threshold=1.0,
+                threshold=self.threshold,
+                reset_voltage=0.0,
+                leakage_constant=1.0,  # No leak for S-LCA
                 potential=0.0,
-                p=1.0,
+                bias=0.0,  # Backend will set proper bias values
+                p=1.0,  # Deterministic spiking
+                dt=self.dt,
+                tau_syn=self.tau_syn,
+                lam=self.lam,
+                neuron_type='CompetitiveNeuron'  # Specify S-LCA neuron type
             )
 
-        # Build inhibitory connections (W = ΦᵀΦ - I)
+        # Build lateral inhibitory connections (W = ΦᵀΦ - I)
         W = Phi.T @ Phi
         np.fill_diagonal(W, 0.0)  # Remove self-connections
 
-        # Add lateral inhibition edges
+        # Add lateral inhibition edges with proper weights
+        # When neuron i spikes, it sends inhibitory signals to neurons j
         for i in range(N):
             for j in range(N):
-                if i != j:  
+                if i != j and W[j, i] > 0:  # Only add significant connections
                     graph.add_edge(neuron_names[i], neuron_names[j], 
-                                 weight=0, delay=1)
+                                 weight=W[i, j],  # Inhibitory weight: i inhibits j with strength W[j,i]
+                                 delay=1)
 
         # Create output port data using the proper pattern
         from ..scaffold.port import PortUtil, ChannelData

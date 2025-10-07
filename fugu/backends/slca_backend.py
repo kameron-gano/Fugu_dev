@@ -74,48 +74,54 @@ class slca_Backend(snn_Backend):
         # Let the parent build the physical SNN (neurons/synapses).
         # We won't rely on presynaptic synapses; we push Δv via bias per step.
         super().compile(scaffold, compile_args)
-        for name, n in self.nn.nrns.items():
-            if "begin" in name or "complete" in name:
-                continue
-            n.leakage_constant = 1.0
+
+        # Update neuron biases with computed feedforward drive
+        self._update_neuron_biases()
+
         # Configure LIF shells: no leak, known threshold/reset
 
+    def _update_neuron_biases(self):
+        """Update neuron biases and S-LCA parameters with computed values"""
+        lca_neuron_idx = 0
+        for name, neuron in self.nn.nrns.items():
+            if "neuron_" in name and "complete" not in name:
+                # Set feedforward bias
+                neuron._b = self.b[lca_neuron_idx]
+                
+                # Update S-LCA parameters if it's a CompetitiveNeuron
+                if hasattr(neuron, 'lam'):
+                    neuron.lam = self.lam
+                if hasattr(neuron, 'dt'):
+                    neuron.dt = self.dt
+                if hasattr(neuron, 'tau_syn'):
+                    neuron.tau_syn = self.tau
+                if hasattr(neuron, 'decay'):
+                    neuron.decay = self.decay
+                
+                lca_neuron_idx += 1
+
     def slca_step(self):
-        # update decays of inhibitory spikes based on spike history
-        self.inhibition = self.decay*self.inhibition + self.spikes_prev
-
-        # update soma current
-        self.soma_current = self.b - (self.W @ (self.inhibition / self.tau))
-
-        # integrate the change in soma current for this time step
-        self.int_soma_current += self.soma_current * self.dt
-
-        # Direct voltage integration: v += dt * (mu - lam)
-        for name, n in self.nn.nrns.items():
-            if "begin" in name or "complete" in name:
-                continue
-            # Extract neuron index from name
-            idx = int(name.split('_')[-1])
-            # Direct S-LCA voltage update
-            dv = self.dt * (self.soma_current[idx] - self.lam)
-            n.v += dv
-            # Check for spike and reset
-            if n.v >= n.threshold:
-                n.spike_hist.append(True)
-                n.v = 0.0  # Reset
-            else:
-                n.spike_hist.append(False)
+        # Step the neural network
+        self.nn.step()
         
-        # Don't run the neural network - we're handling integration manually
-
-        # Extract spike information from what we just computed
-        new_spikes = np.zeros(self.N, dtype=float)
-        for name, n in self.nn.nrns.items():  
-            if "begin" in name or "complete" in name:
-                continue
-            idx = int(name.split('_')[-1])
-            new_spikes[idx] = 1.0 if (n.spike_hist and n.spike_hist[-1]) else 0.0
-        self.spikes_prev = new_spikes
+        # Extract current spikes and update S-LCA state
+        current_spikes = np.zeros(self.N)
+        lca_neuron_idx = 0
+        for name, neuron in self.nn.nrns.items():
+            if "neuron_" in name and "complete" not in name:
+                current_spikes[lca_neuron_idx] = float(neuron.spike)
+                # Update soma current for integration
+                self.soma_current[lca_neuron_idx] = neuron.soma_current if hasattr(neuron, 'soma_current') else 0.0
+                lca_neuron_idx += 1
+        
+        # Update inhibition traces: r[t] = decay * r[t-1] + spikes[t-1]
+        self.inhibition = self.decay * self.inhibition + self.spikes_prev
+        
+        # Integrate soma currents
+        self.int_soma_current += self.soma_current * self.dt
+        
+        # Store spikes for next step
+        self.spikes_prev[:] = current_spikes
 
     def run(self, n_steps: Optional[int] = None, return_readout: bool = True):
         """
@@ -143,9 +149,11 @@ class slca_Backend(snn_Backend):
             n.spike_hist.clear()
 
         for k in range(steps):
-            self.slca_step()
-            if int_soma_current_at_t0 is None and k >= self.t0_steps:
+            # Capture initial state after t0_steps for tail readout
+            if k == self.t0_steps:
                 int_soma_current_at_t0 = self.int_soma_current.copy()
+            
+            self.slca_step()
 
         if int_soma_current_at_t0 is None:
             int_soma_current_at_t0 = np.zeros_like(self.int_soma_current)
@@ -154,9 +162,13 @@ class slca_Backend(snn_Backend):
         mu_tail = (self.int_soma_current - int_soma_current_at_t0) / max(T_tail, 1e-12)
         a_tail = np.maximum(0.0, mu_tail - self.lam)
 
-        counts = np.array([sum(self.nn.nrns[n].spike_hist) for n in self.nn.nrns], dtype=int)
+        counts = []
+        for name, n in self.nn.nrns.items():
+            if "begin" in name or "complete" in name:
+                continue
+            counts.append(sum(n.spike_hist))
         T_sec = steps * self.dt
-        a_rate = counts / max(T_sec, 1e-12)
+        a_rate = np.array(counts) / max(T_sec, 1e-12)
 
         x_hat = self.Phi @ a_tail
-        return {"a_tail": a_tail, "a_rate": a_rate, "counts": counts, "x_hat": x_hat, "b": self.b, "W": self.W}
+        return {"a_tail": a_tail, "a_rate": a_rate, "counts": np.array(counts), "x_hat": x_hat, "b": self.b, "W": self.W}
