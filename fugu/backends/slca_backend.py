@@ -36,11 +36,13 @@ class slca_Backend(snn_Backend):
         self.y_obs = compile_args.get('y', None)
         self.K = compile_args.get('K', None)
         self.lam = float(compile_args.get('lam', 0.1))
-        self.dt = float(compile_args.get('dt', 1e-4))
-        self.tau= float(compile_args.get('tau_syn', 1e-2))
+        self.tau = float(compile_args.get('tau_syn', 1e-2))
         self.T_steps = int(compile_args.get('T_steps', 1000))
         self.t0_steps = int(compile_args.get('t0_steps', max (1, self.T_steps // 10)))
         self.unit_area = bool(compile_args.get('unit_area', True))
+
+        if self.tau <= 0:
+            raise ValueError("tau_syn must be positive.")
 
         if self.Phi is None or self.y_obs is None:
             raise ValueError("LCA_Backend.compile requires Phi (M x N) and y (M,) in compile_args.")
@@ -61,9 +63,6 @@ class slca_Backend(snn_Backend):
         # Unit-area exponential synapse scaling (each spike contributes unit area)
         self.W = (W / self.tau) if self.unit_area else W
 
-        # Precompute decay for synaptic traces
-        self.decay = float(np.exp(-self.dt / self.tau))
-
         # Dimensions and external S-LCA states
         self.N = self.Phi.shape[1]
         self.inhibition = np.zeros(self.N)                   # filtered spike traces
@@ -76,29 +75,35 @@ class slca_Backend(snn_Backend):
         super().compile(scaffold, compile_args)
 
         # Update neuron biases with computed feedforward drive
-        self._update_neuron_biases()
+        # self._lam_in_bias = False
+        # self._update_neuron_biases()
 
         # Configure LIF shells: no leak, known threshold/reset
 
-    def _update_neuron_biases(self):
-        """Update neuron biases and S-LCA parameters with computed values"""
-        lca_neuron_idx = 0
-        for name, neuron in self.nn.nrns.items():
-            if "neuron_" in name and "complete" not in name:
-                # Set feedforward bias
-                neuron._b = self.b[lca_neuron_idx]
-                
-                # Update S-LCA parameters if it's a CompetitiveNeuron
-                if hasattr(neuron, 'lam'):
-                    neuron.lam = self.lam
-                if hasattr(neuron, 'dt'):
-                    neuron.dt = self.dt
-                if hasattr(neuron, 'tau_syn'):
-                    neuron.tau_syn = self.tau
-                if hasattr(neuron, 'decay'):
-                    neuron.decay = self.decay
-                
-                lca_neuron_idx += 1
+    # def _update_neuron_biases(self):
+    #     """Update neuron biases and S-LCA parameters with computed values"""
+    #     bias_scaled = self.dt * (self.b - self.lam)
+    #     self.bias_scaled = np.array(bias_scaled, copy=True)
+    #     effective_tau = self.tau / self.dt
+    #     self._lam_in_bias = True
+
+    #     lca_neuron_idx = 0
+    #     for name, neuron in self.nn.nrns.items():
+    #         if "neuron_" not in name or "complete" in name:
+    #             continue
+
+    #         neuron._b = self.bias_scaled[lca_neuron_idx]
+
+    #         if hasattr(neuron, 'compartment'):
+    #             neuron.compartment = True
+    #         if hasattr(neuron, 'dt'):
+    #             neuron.dt = 1e-3
+    #         if hasattr(neuron, 'tau_syn'):
+    #             neuron.tau_syn = effective_tau
+    #         if hasattr(neuron, 'decay'):
+    #             neuron.decay = self.decay
+
+    #         lca_neuron_idx += 1
 
     def slca_step(self):
         # Step the neural network
@@ -108,56 +113,71 @@ class slca_Backend(snn_Backend):
         lca_neuron_idx = 0
         for name, neuron in self.nn.nrns.items():
             if "neuron_" in name and "complete" not in name:
-                # Update soma current for integration
-                self.soma_current[lca_neuron_idx] = neuron.soma_current if hasattr(neuron, 'soma_current') else 0.0
+                if hasattr(neuron, 'soma_current'):
+                    self.soma_current[lca_neuron_idx] = neuron.soma_current
+                else:
+                    self.soma_current[lca_neuron_idx] = 0.0
                 lca_neuron_idx += 1
         
         
         # Integrate soma currents
-        self.int_soma_current += self.soma_current * self.dt
+        self.int_soma_current += self.soma_current
         
 
-    def run(self, n_steps: Optional[int] = None):
-        """
-        Run S-LCA in this backend.
+    def run(self, n_steps: Optional[int] = None, rescale: Optional[bool] = False, dt: Optional[float] = 1e-3):
+            """
+            Run S-LCA in this backend.
 
-        Args:
-          n_steps: number of S-LCA steps (defaults to self.T_steps).
-          return_readout:
-            - True: return a dict with 'a_tail', 'a_rate', 'counts', 'x_hat'
-            - False: mimic snn_Backend.run() and return spike_times dataframe.
+            Args:
+              n_steps: number of S-LCA steps (defaults to self.T_steps).
+              rescale: when True, convert per-step quantities to per-second by dividing by dt.
+                       Specifically, a_tail and a_rate are divided by dt. Counts remain raw.
+              dt: time step size used for rescaling when rescale=True.
 
-        NOTE: We do NOT rely on input spikes; Δv is injected via bias each step.
-        """
+            Returns:
+              dict with 'a_tail', 'a_rate', 'counts', 'x_hat', 'b', 'W'.
 
-        steps = int(self.T_steps if n_steps is None else n_steps)
+            Notes:
+            - We do NOT rely on input spikes; Δv is injected via bias each step.
+            - Internally, integration accumulates per-step values; rescaling maps to per-second units.
+            """
+            if dt <= 0:
+                raise ValueError(f"Scale factor dt must be stricly positive. The provide scale factor: dt=", dt)
 
-        int_soma_current_at_t0 = None
-        self.soma_current[:] = 0.0
-        self.int_soma_current[:] = 0.0
+            steps = int(self.T_steps if n_steps is None else n_steps)
+
+            int_soma_current_at_t0 = None
+            self.soma_current[:] = 0.0
+            self.int_soma_current[:] = 0.0
 
 
-        for k in range(steps):
-            # Capture initial state after t0_steps for tail readout
-            if k == self.t0_steps:
-                int_soma_current_at_t0 = self.int_soma_current.copy()
-            
-            self.slca_step()
+            for k in range(steps):
+                # Capture initial state after t0_steps for tail readout
+                if k == self.t0_steps:
+                    int_soma_current_at_t0 = self.int_soma_current.copy()
+                
+                self.slca_step()
 
-        if int_soma_current_at_t0 is None:
-            int_soma_current_at_t0 = np.zeros_like(self.int_soma_current)
+            if int_soma_current_at_t0 is None:
+                int_soma_current_at_t0 = np.zeros_like(self.int_soma_current)
 
-        T_tail = (steps - self.t0_steps) * self.dt
-        mu_tail = (self.int_soma_current - int_soma_current_at_t0) / max(T_tail, 1e-12)
-        a_tail = np.maximum(0.0, mu_tail - self.lam)
+            T_tail = (steps - self.t0_steps) 
+            mu_tail = (self.int_soma_current - int_soma_current_at_t0) / max(T_tail, 1e-12)
+            a_tail = np.maximum(0.0, mu_tail)
 
-        counts = []
-        for name, n in self.nn.nrns.items():
-            if "begin" in name or "complete" in name:
-                continue
-            counts.append(sum(n.spike_hist))
-        T_sec = steps * self.dt
-        a_rate = np.array(counts) / max(T_sec, 1e-12)
+            counts = []
+            for name, n in self.nn.nrns.items():
+                if "begin" in name or "complete" in name:
+                    continue
+                counts.append(sum(n.spike_hist))
+            # Per-step spike rate (spikes per step)
+            a_rate = np.array(counts) / max(steps, 1e-12)
 
-        x_hat = self.Phi @ a_tail
-        return {"a_tail": a_tail, "a_rate": a_rate, "counts": np.array(counts), "x_hat": x_hat, "b": self.b, "W": self.W}
+            # Optional rescaling from per-step to per-second
+            if rescale:
+                scale = 1.0 / dt
+                a_tail = a_tail * scale
+                a_rate = a_rate * scale
+
+            x_hat = self.Phi @ a_tail
+            return {"a_tail": a_tail, "a_rate": a_rate, "counts": np.array(counts), "x_hat": x_hat, "b": self.b, "W": self.W}

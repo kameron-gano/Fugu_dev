@@ -464,7 +464,7 @@ class CompetitiveNeuron(LIFNeuron):
         self.dt = dt
         self.tau_syn = tau_syn
         self.lam = lam
-        self.decay = np.exp(-dt / tau_syn)  # Synaptic decay factor
+        self.decay = np.exp(-dt)  # Synaptic decay factor
         
         # State variables for S-LCA
         self.soma_current = 0.0  # u_i[t]
@@ -551,3 +551,135 @@ class CompetitiveNeuron(LIFNeuron):
             new_spikes[idx] = 1.0 if (n.spike_hist and n.spike_hist[-1]) else 0.0
         self.spikes_prev = new_spikes
 """
+
+
+class GeneralNeuron(LIFNeuron):
+    """
+    General-purpose neuron that combines standard LIF dynamics with optional
+    competitive (S-LCA-style) compartment behaviour. When the compartment is
+    disabled, the neuron behaves identically to ``LIFNeuron``. When enabled,
+    the neuron tracks lateral inhibition with exponential synaptic decay while
+    still supporting stochastic spiking.
+    """
+
+    def __init__(
+        self,
+        name=None,
+        threshold=0.0,
+        reset_voltage=0.0,
+        leakage_constant=1.0,
+        voltage=0.0,
+        bias=0.0,
+        p=1.0,
+        record=False,
+        dt=1,
+        tau_syn=1.0,
+        lam=0.0,
+        compartment=False,
+    ):
+        """
+        Parameters mirror ``LIFNeuron`` with additional S-LCA-specific options.
+
+        Args:
+            name (str): Neuron name.
+            threshold (float): Spike threshold.
+            reset_voltage (float): Voltage post spike.
+            leakage_constant (float): Voltage leak factor (m in LIF).
+            voltage (float): Initial membrane voltage.
+            bias (float): Constant bias added each step.
+            p (float): Spike probability when above threshold.
+            record (bool): Whether to expose neuron to probes.
+            dt (float): Integration timestep for compartment dynamics.
+            tau_syn (float): Synaptic time constant for lateral traces.
+            lam (float): Sparsity threshold (lambda) for compartment mode.
+            compartment (bool): Enable competitive compartment dynamics.
+        """
+
+        threshold = int_to_float(threshold)
+        reset_voltage = int_to_float(reset_voltage)
+        leakage_constant = int_to_float(leakage_constant)
+        voltage = int_to_float(voltage)
+        bias = int_to_float(bias)
+        p = int_to_float(p)
+        dt = int_to_float(dt)
+        tau_syn = int_to_float(tau_syn)
+
+        validate_type(name, str_types)
+        validate_type(threshold, float_types)
+        validate_type(reset_voltage, float_types)
+        validate_type(leakage_constant, float_types)
+        validate_type(voltage, float_types)
+        validate_type(bias, float_types)
+        validate_type(p, float_types)
+        validate_type(record, bool_types)
+        validate_type(dt, float_types)
+        validate_type(tau_syn, float_types)
+        validate_type(compartment, bool_types)
+
+        if leakage_constant < 0 or leakage_constant > 1:
+            raise UserWarning("For realistic models, leakage m should be in the interval [0, 1].")
+
+        if p < 0 or p > 1:
+            raise ValueError("Probability p must be in the interval [0, 1].")
+
+        if tau_syn <= 0:
+            raise ValueError("tau_syn must be positive for compartment dynamics.")
+
+        if dt < 0:
+            raise ValueError("dt must be non-negative.")
+
+        super(GeneralNeuron, self).__init__(
+            name=name,
+            threshold=threshold,
+            reset_voltage=reset_voltage,
+            leakage_constant=leakage_constant,
+            voltage=voltage,
+            bias=bias,
+            p=p,
+            record=record,
+        )
+
+        self.dt = dt
+        self.tau_syn = tau_syn
+        self.compartment = compartment
+        self.decay = np.exp(-1e-3 / tau_syn) if tau_syn > 0 else 0.0
+
+        self.soma_current = 0.0
+        self.lateral_inhibition = 0.0
+
+    def update_state(self):
+        """
+        Update neuron state. Falls back to ``LIFNeuron`` behaviour when the
+        compartment is disabled, otherwise executes competitive dynamics with
+        stochastic spiking.
+        """
+
+        synaptic_input = 0.0
+        if self.presyn:
+            for s in self.presyn:
+                if len(s._hist) > 0:
+                    synaptic_input += s._hist[0]
+
+        if not self.compartment:
+            self.lateral_inhibition = 0.0
+            self.soma_current = self._b + synaptic_input
+            super(GeneralNeuron, self).update_state()
+        else:
+            self.lateral_inhibition = self.decay * self.lateral_inhibition + synaptic_input
+            self.soma_current = self._b - self.lateral_inhibition
+
+        dv = self.dt * (self.soma_current)
+        self.v += dv
+
+        if self.v > self._T:
+            if np.random.random(1) <= self.prob:
+                self.spike = True
+                self.v = self._R
+            else:
+                self.spike = False
+                self.v = self._m * self.v
+        else:
+            self.spike = False
+            self.v = self._m * self.v
+
+        self.spike_hist.append(self.spike)
