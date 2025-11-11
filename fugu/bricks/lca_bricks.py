@@ -10,9 +10,9 @@ class LCABrick(Brick):
         dt=1e-3,
         tau_syn=1.0,
         threshold=1.0,
-        lam=0.0,
         spike_prob=1.0,
         leakage_constant=1.0,
+        lam=0.1,
         reset_voltage=0.0,
         **kwargs,
     ):
@@ -87,6 +87,9 @@ class LCABrick(Brick):
             p=1.0,
             potential=0.0,
         )
+        comp = {"name":"RecurrentInhibition", 
+                "tau_syn": 1,
+                "dt":self.dt}
 
         neuron_names = []
         for i in range(N):
@@ -101,9 +104,8 @@ class LCABrick(Brick):
                 potential=0.0,
                 bias=float(scaled_bias[i]),
                 p=self.spike_prob,
-                dt=1,
                 neuron_type='GeneralNeuron',
-                compartment=True,
+                compartment=comp,
             )
 
         W = Phi.T @ Phi

@@ -69,7 +69,7 @@ class snn_Backend(Backend):
             elif neuron_type == 'GeneralNeuron':
                 dt = props.get('dt', 1.0)
                 tau_syn = props.get('tau_syn', 1.0)
-                compartment = props.get('compartment', False)
+                compartment = props.get('compartment', None)
                 leakage_constant = props.get('leakage_constant', Vretain)
                 n = GeneralNeuron(
                     name=neuron,
@@ -80,8 +80,6 @@ class snn_Backend(Backend):
                     bias=Vbias,
                     p=P,
                     record=recordAll,
-                    dt=dt,
-                    tau_syn=tau_syn,
                     compartment=compartment,
                 )
             else:

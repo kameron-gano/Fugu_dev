@@ -75,35 +75,6 @@ class slca_Backend(snn_Backend):
         super().compile(scaffold, compile_args)
 
         # Update neuron biases with computed feedforward drive
-        # self._lam_in_bias = False
-        # self._update_neuron_biases()
-
-        # Configure LIF shells: no leak, known threshold/reset
-
-    # def _update_neuron_biases(self):
-    #     """Update neuron biases and S-LCA parameters with computed values"""
-    #     bias_scaled = self.dt * (self.b - self.lam)
-    #     self.bias_scaled = np.array(bias_scaled, copy=True)
-    #     effective_tau = self.tau / self.dt
-    #     self._lam_in_bias = True
-
-    #     lca_neuron_idx = 0
-    #     for name, neuron in self.nn.nrns.items():
-    #         if "neuron_" not in name or "complete" in name:
-    #             continue
-
-    #         neuron._b = self.bias_scaled[lca_neuron_idx]
-
-    #         if hasattr(neuron, 'compartment'):
-    #             neuron.compartment = True
-    #         if hasattr(neuron, 'dt'):
-    #             neuron.dt = 1e-3
-    #         if hasattr(neuron, 'tau_syn'):
-    #             neuron.tau_syn = effective_tau
-    #         if hasattr(neuron, 'decay'):
-    #             neuron.decay = self.decay
-
-    #         lca_neuron_idx += 1
 
     def slca_step(self):
         # Step the neural network

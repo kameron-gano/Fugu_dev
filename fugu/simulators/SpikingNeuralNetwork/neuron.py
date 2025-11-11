@@ -553,13 +553,121 @@ class CompetitiveNeuron(LIFNeuron):
 """
 
 
+class Dendrite(ABC):
+    """Abstract base class for dendritic compartments.
+
+    A dendritic compartment transforms presynaptic (already weighted) spike
+    inputs into an inhibition (or modulation) current made available to the
+    soma each timestep. Concrete subclasses must implement ``step`` and
+    ``inhibition`` to expose their internal state.
+    """
+
+    @abc.abstractmethod
+    def step(self, presyn_current: float) -> float:  # pragma: no cover - interface
+        """Advance internal state given summed presynaptic current.
+
+        Args:
+            presyn_current (float): Summed weighted presynaptic spikes.
+        Returns:
+            float: Updated inhibition (or modulation) current.
+        """
+        raise NotImplementedError
+
+    # Subclasses may optionally expose an `inhibition` property; not required here.
+
+    def reset(self):  # optional hook
+        pass
+
+    @abc.abstractmethod
+    def update(self, neuron: "GeneralNeuron", lif_update):  # pragma: no cover - interface
+        """Integrate compartment effect with neuron.
+
+        Subclasses decide how to:
+          * read presynaptic spikes
+          * advance internal state
+          * apply modulation to the neuron's LIF step (via lif_update callback)
+
+        Args:
+            neuron (GeneralNeuron): The neuron being updated.
+            lif_update (Callable): Helper to perform one LIF update with optional overrides.
+        """
+        raise NotImplementedError
+
+
+class RecurrentInhibition(Dendrite):
+    """Concrete compartment implementing exponential decay recurrent inhibition.
+
+    Dynamics:
+        trace[t] = exp(-dt/tau_syn) * trace[t-1] + presyn_current[t-1]
+    inhibition(t) == trace[t]
+    """
+
+    def __init__(self, tau_syn: float = 1.0, dt: float = 1.0):
+        tau_syn = int_to_float(tau_syn)
+        dt = int_to_float(dt)
+        validate_type(tau_syn, float_types)
+        validate_type(dt, float_types)
+        if tau_syn <= 0:
+            raise ValueError("tau_syn must be positive")
+        if dt < 0:
+            raise ValueError("dt must be non-negative")
+        self.tau_syn = tau_syn
+        self.dt = dt
+        self.decay = np.exp(-dt / tau_syn)
+        self._trace = 0.0
+
+    def step(self, presyn_current: float) -> float:
+        presyn_current = int_to_float(presyn_current)
+        validate_type(presyn_current, float_types)
+        self._trace = self.decay * self._trace + presyn_current
+        return self._trace
+
+    @property
+    def inhibition(self) -> float:
+        return self._trace
+
+    def update(self, neuron: "GeneralNeuron", lif_update):
+        """Apply recurrent inhibition as subtractive bias before LIF update."""
+        synaptic_input = 0.0
+        if neuron.presyn:
+            for s in neuron.presyn:
+                if len(s._hist) > 0:
+                    synaptic_input += s._hist[0]
+
+        # Advance trace
+        self.step(synaptic_input)
+        # Expose diagnostics
+        try:
+            neuron.lateral_inhibition = self.inhibition  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        b_eff = neuron._b - self.inhibition
+        try:
+            neuron.soma_current = b_eff  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        lif_update(bias=b_eff, ignore_presyn=True)
+
+    def reset(self):
+        self._trace = 0.0
+
+    def __repr__(self):
+        return f"RecurrentInhibition(tau_syn={self.tau_syn}, dt={self.dt})"
+
+
+# Registry of available dendritic compartments by name
+COMPARTMENT_REGISTRY = {
+    "RecurrentInhibition": RecurrentInhibition,
+}
+
+
 class GeneralNeuron(LIFNeuron):
     """
-    General-purpose neuron that combines standard LIF dynamics with optional
-    competitive (S-LCA-style) compartment behaviour. When the compartment is
-    disabled, the neuron behaves identically to ``LIFNeuron``. When enabled,
-    the neuron tracks lateral inhibition with exponential synaptic decay while
-    still supporting stochastic spiking.
+    General-purpose neuron that exposes the same public interface as ``LIFNeuron``
+    and optionally attaches a dendritic compartment to handle recurrent inhibitory
+    dynamics. Spiking and leak are performed by invoking ``LIFNeuron.update_state``
+    so the soma dynamics remain unchanged; the compartment only computes an
+    inhibition current that modulates the effective bias.
     """
 
     def __init__(
@@ -572,62 +680,19 @@ class GeneralNeuron(LIFNeuron):
         bias=0.0,
         p=1.0,
         record=False,
-        dt=1,
-        tau_syn=1.0,
-        lam=0.0,
-        compartment=False,
+        compartment=None,
     ):
         """
-        Parameters mirror ``LIFNeuron`` with additional S-LCA-specific options.
+        Mirrors ``LIFNeuron`` signature and adds an optional ``compartment`` field.
 
         Args:
-            name (str): Neuron name.
-            threshold (float): Spike threshold.
-            reset_voltage (float): Voltage post spike.
-            leakage_constant (float): Voltage leak factor (m in LIF).
-            voltage (float): Initial membrane voltage.
-            bias (float): Constant bias added each step.
-            p (float): Spike probability when above threshold.
-            record (bool): Whether to expose neuron to probes.
-            dt (float): Integration timestep for compartment dynamics.
-            tau_syn (float): Synaptic time constant for lateral traces.
-            lam (float): Sparsity threshold (lambda) for compartment mode.
-            compartment (bool): Enable competitive compartment dynamics.
+            compartment (dict | None):
+                - None: disable and fall back to plain LIF behaviour
+                - dict: {'name': <CompartmentClassName>, <param1>: val1, ...}
+                  'name' is optional and defaults to 'RecurrentInhibition'.
+                  Remaining keys are passed as kwargs to the compartment ctor and
+                  must match parameter names exactly.
         """
-
-        threshold = int_to_float(threshold)
-        reset_voltage = int_to_float(reset_voltage)
-        leakage_constant = int_to_float(leakage_constant)
-        voltage = int_to_float(voltage)
-        bias = int_to_float(bias)
-        p = int_to_float(p)
-        dt = int_to_float(dt)
-        tau_syn = int_to_float(tau_syn)
-
-        validate_type(name, str_types)
-        validate_type(threshold, float_types)
-        validate_type(reset_voltage, float_types)
-        validate_type(leakage_constant, float_types)
-        validate_type(voltage, float_types)
-        validate_type(bias, float_types)
-        validate_type(p, float_types)
-        validate_type(record, bool_types)
-        validate_type(dt, float_types)
-        validate_type(tau_syn, float_types)
-        validate_type(compartment, bool_types)
-
-        if leakage_constant < 0 or leakage_constant > 1:
-            raise UserWarning("For realistic models, leakage m should be in the interval [0, 1].")
-
-        if p < 0 or p > 1:
-            raise ValueError("Probability p must be in the interval [0, 1].")
-
-        if tau_syn <= 0:
-            raise ValueError("tau_syn must be positive for compartment dynamics.")
-
-        if dt < 0:
-            raise ValueError("dt must be non-negative.")
-
         super(GeneralNeuron, self).__init__(
             name=name,
             threshold=threshold,
@@ -639,47 +704,58 @@ class GeneralNeuron(LIFNeuron):
             record=record,
         )
 
-        self.dt = dt
-        self.tau_syn = tau_syn
-        self.compartment = compartment
-        self.decay = np.exp(-1e-3 / tau_syn) if tau_syn > 0 else 0.0
+        # Optional dendritic compartment wiring (dict-based)
+        self.compartment = None
+        if compartment is None:
+            self.compartment = None
+        elif isinstance(compartment, dict):
+            comp_name = compartment.get("name", "RecurrentInhibition")
+            params = {k: v for k, v in compartment.items() if k != "name"}
+            cls = COMPARTMENT_REGISTRY.get(comp_name)
+            if cls is None:
+                raise ValueError(
+                    f"Unknown compartment name '{comp_name}'. Available: {list(COMPARTMENT_REGISTRY.keys())}"
+                )
+            try:
+                instance = cls(**params)
+            except TypeError as e:
+                raise TypeError(
+                    f"Failed to construct compartment '{comp_name}' with params {params}: {e}"
+                )
+            if not isinstance(instance, Dendrite):
+                raise TypeError(f"Constructed compartment is not a Dendrite: {type(instance)}")
+            self.compartment = instance
+        else:
+            raise TypeError("compartment must be None or dict")
 
+        # Expose observables for diagnostics
         self.soma_current = 0.0
         self.lateral_inhibition = 0.0
 
     def update_state(self):
         """
-        Update neuron state. Falls back to ``LIFNeuron`` behaviour when the
-        compartment is disabled, otherwise executes competitive dynamics with
-        stochastic spiking.
+        If no compartment is attached, behave exactly like ``LIFNeuron``.
+        If a compartment is attached, delegate to the compartment's ``update``
+        method with a callback to perform the LIF update under temporary
+        overrides. This makes interaction fully customizable by the compartment.
         """
-
-        synaptic_input = 0.0
-        if self.presyn:
-            for s in self.presyn:
-                if len(s._hist) > 0:
-                    synaptic_input += s._hist[0]
-
-        if not self.compartment:
-            self.lateral_inhibition = 0.0
-            self.soma_current = self._b + synaptic_input
+        if self.compartment is None:
             super(GeneralNeuron, self).update_state()
-        else:
-            self.lateral_inhibition = self.decay * self.lateral_inhibition + synaptic_input
-            self.soma_current = self._b - self.lateral_inhibition
+            return
 
-        dv = self.dt * (self.soma_current)
-        self.v += dv
+        # Define a helper that runs one LIF step under temporary overrides
+        def lif_update(bias=None, ignore_presyn=False):
+            old_bias = self._b
+            old_presyn = self.presyn
+            try:
+                if bias is not None:
+                    self._b = float(bias)
+                if ignore_presyn:
+                    self.presyn = set()
+                super(GeneralNeuron, self).update_state()
+            finally:
+                self._b = old_bias
+                self.presyn = old_presyn
 
-        if self.v > self._T:
-            if np.random.random(1) <= self.prob:
-                self.spike = True
-                self.v = self._R
-            else:
-                self.spike = False
-                self.v = self._m * self.v
-        else:
-            self.spike = False
-            self.v = self._m * self.v
-
-        self.spike_hist.append(self.spike)
+        # Delegate to the compartment for custom interaction
+        self.compartment.update(self, lif_update)
