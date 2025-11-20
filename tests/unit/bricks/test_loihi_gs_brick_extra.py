@@ -33,25 +33,7 @@ def test_adjacency_matrix_input():
     assert G[n2][n1]['delay'] == 0  # 1-1
 
 
-def test_networkx_input_and_max_delay_clamp():
-    g = nx.DiGraph()
-    g.add_node('X')
-    g.add_node('Y')
-    g.add_edge('X', 'Y', weight=10)
 
-    # clamp backward delay to 4
-    brick = LoihiGSBrick(g, name='nxGS', max_delay=4)
-    G = nx.DiGraph()
-    brick.build(G, None, None, None, None)
-
-    nX = brick.node_to_neuron['X']
-    nY = brick.node_to_neuron['Y']
-
-    assert G.has_edge(nX, nY)
-    assert G[nX][nY]['delay'] == 0
-    assert G.has_edge(nY, nX)
-    # original cost 10 => backward 9, clamped to 4
-    assert G[nY][nX]['delay'] == 4
 
 
 def test_float_costs_quantize_when_allowed():

@@ -39,26 +39,70 @@ class LoihiGSBrick(Brick):
         If True, raise on non-integer costs. If False, costs are rounded.
     The input graph is required to be (weakly) connected; this is validated
     on construction/build.
-    max_delay : int or None
-        Optional clamp for delays.
     """
 
     def __init__(self,
                  input_graph: Any,
                  name: str = "LoihiGS",
-                 require_integer_costs: bool = True,
-                 max_delay: int = None):
+                 require_integer_costs: bool = True):
         super().__init__(name=name)
         self.input_graph = input_graph
         self.require_integer_costs = require_integer_costs
-        self.max_delay = max_delay
+        
 
         # Populated after preprocess
         self.node_list: List[Any] = []
         self.edges: List[Tuple[Any, Any, int]] = []
         self.node_to_neuron: Dict[Any, str] = {}
 
-    # ---- parsing and preprocessing helpers ----
+    def _parse_networkx(self, g):
+        nodes = []
+        edges: List[Tuple[Any, Any, int]] = []
+        nodes = list(g.nodes())
+        for u, v, data in g.edges(data=True):
+            c = data.get('weight', data.get('cost', 1))
+            edges.append((u, v, int(round(c))))
+        return nodes, edges
+    
+    def _parse_adj_list(self, g):
+        nodes = []
+        edges: List[Tuple[Any, Any, int]] = []
+        nodes = list(g.keys())
+        for u, nbrs in g.items():
+            for e in nbrs:
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    v, c = e[0], e[1]
+                else:
+                    v, c = e, 1
+                if self.require_integer_costs:
+                    if not float(c).is_integer():
+                        raise ValueError(f"Non-integer cost {c} on edge {u}->{v}")
+                    c = int(c)
+                else:
+                    c = int(round(float(c)))
+                edges.append((u, v, c))
+        # ensure nodes include any referenced nodes
+        extra = {v for (_, v, _) in edges} - set(nodes)
+        nodes.extend(sorted(list(extra)))
+        return nodes, edges
+    
+    def _parse_adj_matrix(self, g):
+        # assume matrix-like
+        nodes = []
+        edges: List[Tuple[Any, Any, int]] = []
+        n = len(g)
+        nodes = list(range(n))
+        for i in range(n):
+            row = g[i]
+            for j in range(len(row)):
+                val = row[j]
+                if val:
+                    if self.require_integer_costs and not float(val).is_integer():
+                        raise ValueError(f"Non-integer cost {val} at [{i}][{j}]")
+                    c = int(round(val))
+                    edges.append((i, j, c))
+        return nodes, edges
+
     def _parse_input(self) -> Tuple[List[Any], List[Tuple[Any, Any, int]]]:
         """Parse input_graph into (nodes, edges) where edges are (u, v, cost).
 
@@ -70,50 +114,20 @@ class LoihiGSBrick(Brick):
 
         # networkx
         if isinstance(g, nx.DiGraph) or isinstance(g, nx.Graph):
-            nodes = list(g.nodes())
-            for u, v, data in g.edges(data=True):
-                c = data.get('weight', data.get('cost', 1))
-                edges.append((u, v, int(round(c))))
-            return nodes, edges
+            return self._parse_networkx(g)
 
         # adjacency list (dict)
         if isinstance(g, dict):
-            nodes = list(g.keys())
-            for u, nbrs in g.items():
-                for e in nbrs:
-                    if isinstance(e, (list, tuple)) and len(e) >= 2:
-                        v, c = e[0], e[1]
-                    else:
-                        v, c = e, 1
-                    if self.require_integer_costs:
-                        if not float(c).is_integer():
-                            raise ValueError(f"Non-integer cost {c} on edge {u}->{v}")
-                        c = int(c)
-                    else:
-                        c = int(round(float(c)))
-                    edges.append((u, v, c))
-            # ensure nodes include any referenced nodes
-            extra = {v for (_, v, _) in edges} - set(nodes)
-            nodes.extend(sorted(list(extra)))
-            return nodes, edges
+            return self._parse_adj_list(g)
 
-        # adjacency matrix like (list of lists / 2D array)
-        try:
-            # assume matrix-like
-            n = len(g)
-            nodes = list(range(n))
-            for i in range(n):
-                row = g[i]
-                for j in range(len(row)):
-                    val = row[j]
-                    if val:
-                        if self.require_integer_costs and not float(val).is_integer():
-                            raise ValueError(f"Non-integer cost {val} at [{i}][{j}]")
-                        c = int(round(val))
-                        edges.append((i, j, c))
-            return nodes, edges
-        except Exception:
-            raise ValueError("Unsupported input_graph format")
+        # adjacency matrix-like (list/tuple/array)
+        if hasattr(g, '__len__') and not isinstance(g, (str, bytes)):
+            try:
+                return self._parse_adj_matrix(g)
+            except Exception:
+                pass
+
+        raise ValueError("Unsupported input_graph format")
 
     def _preprocess_fanout(self, nodes: List[Any], edges: List[Tuple[Any, Any, int]]):
         """Enforce fan-out constraint by pushing cost onto auxiliary single-fanout nodes.
@@ -188,8 +202,6 @@ class LoihiGSBrick(Brick):
             graph.add_edge(pre, post, weight=1.0, delay=0)
             # backward synapse j -> i with delay c - 1
             bdelay = c - 1
-            if self.max_delay is not None and bdelay > self.max_delay:
-                bdelay = int(self.max_delay)
             graph.add_edge(post, pre, weight=1.0, delay=int(bdelay))
 
     # ---- public API/Brick build ----
