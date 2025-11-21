@@ -11,7 +11,7 @@ from collections import deque
 from warnings import warn
 
 import fugu.simulators.SpikingNeuralNetwork as snn
-from fugu.simulators.SpikingNeuralNetwork.neuron import CompetitiveNeuron, GeneralNeuron
+from fugu.simulators.SpikingNeuralNetwork.neuron import LIFNeuron, GeneralNeuron
 
 from .backend import Backend, PortDataIterator
 from ..utils.export_utils import results_df_from_dict
@@ -50,25 +50,8 @@ class snn_Backend(Backend):
             # Check for specific neuron type
             neuron_type = props.get('neuron_type', 'LIFNeuron')
             
-            if neuron_type == 'CompetitiveNeuron':
-                # Create CompetitiveNeuron with S-LCA specific parameters
-                dt = props.get('dt', 1e-3)
-                tau_syn = props.get('tau_syn', 1.0)
-                lam = props.get('lam', 0.1)
-                n = CompetitiveNeuron(
-                    name=neuron, 
-                    voltage=Vinit, 
-                    threshold=Vspike, 
-                    reset_voltage=Vreset, 
-                    bias=Vbias, 
-                    dt=dt,
-                    tau_syn=tau_syn,
-                    lam=lam,
-                    record=recordAll
-                )
-            elif neuron_type == 'GeneralNeuron':
-                dt = props.get('dt', 1.0)
-                tau_syn = props.get('tau_syn', 1.0)
+            if neuron_type == 'GeneralNeuron':
+
                 compartment = props.get('compartment', None)
                 leakage_constant = props.get('leakage_constant', Vretain)
                 n = GeneralNeuron(

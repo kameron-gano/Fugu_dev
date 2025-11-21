@@ -89,7 +89,7 @@ class RecurrentInhibition(Dendrite):
 
         # Advance trace
         self.step(synaptic_input)
-        # Expose diagnostics
+        # Expose diagnostics for LCA
         try:
             neuron.lateral_inhibition = self.inhibition
         except Exception:
