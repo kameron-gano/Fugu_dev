@@ -20,17 +20,17 @@ def test_adjacency_matrix_input():
     n1 = brick.node_to_neuron[1]
     n2 = brick.node_to_neuron[2]
 
-    # forward edges delays
+    # forward edge delays now 1
     assert G.has_edge(n0, n1)
-    assert G[n0][n1]['delay'] == 0
+    assert G[n0][n1]['delay'] == 1
     assert G.has_edge(n1, n2)
-    assert G[n1][n2]['delay'] == 0
+    assert G[n1][n2]['delay'] == 1
 
-    # backward delays: cost-1
+    # backward delays equal to cost
     assert G.has_edge(n1, n0)
-    assert G[n1][n0]['delay'] == 1  # 2-1
+    assert G[n1][n0]['delay'] == 2  # cost 2
     assert G.has_edge(n2, n1)
-    assert G[n2][n1]['delay'] == 0  # 1-1
+    assert G[n2][n1]['delay'] == 1  # cost 1
 
 
 
@@ -50,10 +50,10 @@ def test_float_costs_quantize_when_allowed():
     nB = brick.node_to_neuron['B']
 
     assert G.has_edge(nA, nB)
-    assert G[nA][nB]['delay'] == 0
-    # cost 2.7 -> round to 3 -> backward delay 2
+    assert G[nA][nB]['delay'] == 1
+    # cost 2.7 -> round to 3 -> backward delay 3
     assert G.has_edge(nB, nA)
-    assert G[nB][nA]['delay'] == 2
+    assert G[nB][nA]['delay'] == 3
 
 
 def test_disconnected_graph_raises_by_default():

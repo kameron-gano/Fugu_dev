@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Loihi Graph-Search Brick
 
+every directed edge (i -> j) is mapped to:
 This brick implements the preprocessing and mapping described in the
 "Advancing Neuromorphic Computing With Loihi" graph-search algorithm.
 
 It accepts a weighted directed graph (adjacency list or adjacency matrix)
 and converts it into a Loihi-compatible neuron/synapse representation where
 every directed edge (i -> j) is mapped to:
-  - a forward synapse i -> j with weight=1 and delay=0 (readout)
-  - a backward synapse j -> i with weight=1 and delay=c_{i,j} - 1
+    - a forward synapse i -> j with weight=1 and delay=1 (readout)
+    - a backward synapse j -> i with weight=1 and delay=c_{i,j}
 
 Additionally, to satisfy the fan-out constraint, outgoing edges from
 branching nodes are given cost 1 and any extra cost is pushed downstream
@@ -215,10 +216,10 @@ class LoihiGSBrick(Brick):
                 raise ValueError(f"Edge cost must be >=1, got {c} for {u}->{v}")
             pre = self.node_to_neuron[u]
             post = self.node_to_neuron[v]
-            # forward synapse i -> j with delay 0
-            graph.add_edge(pre, post, weight=1.0, delay=0, direction="forward")
-            # backward synapse j -> i with delay c - 1
-            bdelay = c - 1
+            # forward synapse i -> j with delay 1 (minimum delay is now 1)
+            graph.add_edge(pre, post, weight=1.0, delay=1, direction="forward")
+            # backward synapse j -> i with delay equal to original cost c
+            bdelay = c
             graph.add_edge(post, pre, weight=1.0, delay=int(bdelay), direction="backward")
 
             # Fill adjacency helpers
