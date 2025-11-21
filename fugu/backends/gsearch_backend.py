@@ -72,10 +72,29 @@ class gsearch_Backend(snn_Backend):
 		return count
 	
 	def readout_next_hop(self):
-		# for all j fanout of i do
-		#   if w _{i,j} = 1
-		#       return j
-		return
+		"""Return a deterministic next forward hop from a given current neuron.
+
+		After pruning, each path node should have at most one remaining forward
+		edge (direction=='forward', weight>0). To keep backward compatibility with
+		the placeholder signature, this method inspects an attribute
+		`current_hop` on the backend; callers can set `self.current_hop` before
+		invocation. If `current_hop` isn't set, it returns None.
+
+		Returns:
+		    The next neuron name (str) or None if no valid hop.
+		"""
+		current = getattr(self, 'current_hop', None)
+		if current is None or current not in self.fugu_graph:
+			return None
+		candidates = []
+		for _, nxt, data in self.fugu_graph.out_edges(current, data=True):
+			if data.get('direction') == 'forward' and data.get('weight', 0) > 0:
+				candidates.append(nxt)
+		if not candidates:
+			return None
+		# Deterministic selection: pick lowest index (ties arbitrary but stable)
+		candidates.sort(key=lambda n: self.fugu_graph.nodes[n].get('index', 1e9))
+		return candidates[0]
 
 	def reconstruct_path(self) -> list[str]:
 		"""
@@ -86,12 +105,30 @@ class gsearch_Backend(snn_Backend):
 		Returns list of neuron names from source to destination. Empty list if
 		source/destination not known or path not found.
 		"""
-		# path[0] = src
-		# while path[n] != destination:
-		# path[n+1] = readout_next_hop
-		# n = n + 1
-		# return path
-		return []
+		bundle = self.fugu_graph.graph.get('loihi_gs') or {}
+		src = bundle.get('source_neuron')
+		dst = bundle.get('destination_neuron')
+		if not src or not dst:
+			return []
+		if src not in self.fugu_graph or dst not in self.fugu_graph:
+			return []
+		path = [src]
+		self.current_hop = src
+		visited = {src}
+		# Hard cap to avoid infinite loops on malformed graphs
+		limit = len(self.fugu_graph.nodes)
+		steps = 0
+		while self.current_hop != dst and steps < limit:
+			nxt = self.readout_next_hop()
+			if nxt is None or nxt in visited:
+				return []  # no unique path
+			path.append(nxt)
+			visited.add(nxt)
+			self.current_hop = nxt
+			steps += 1
+		if self.current_hop != dst:
+			return []
+		return path
 
 
 	def prune_step(self) -> dict[str, Any]:
@@ -117,11 +154,54 @@ class gsearch_Backend(snn_Backend):
 		return {'zeroed': zeroed, 'remaining': remaining, 'source_spiked': source_spiked}
 
 	def run(self, n_steps: Optional[int] = None):
-		# 1. send a spike into destination
-		# 2. while the source has not spiked,
-		# 3. advance wavefront (self.nn.step)
-		# 4. prune_step
-		# 4. increment time step
-		# 5. advance wavefront one more time (self.nn.step)
-		# 6. step one more time
-		return self.reconstruct_path()
+		"""Run the Loihi graph-search wavefront until source spikes or timeout.
+
+		Algorithm (simplified):
+		 1. Inject an initial spike at the destination neuron.
+		 2. Iterate simulation steps:
+		    - advance network one step (self.nn.step)
+		    - prune backward edges whose post neuron spiked this step
+		    - stop if source neuron has spiked
+		 3. Reconstruct forward path (source -> destination) via remaining forward edges.
+
+		Args:
+		  n_steps: Optional cap on number of simulation iterations. If None, a heuristic
+		           limit is chosen (10x number of neurons).
+
+		Returns:
+		  dict with keys:
+		    'path'              : list[str] path of neuron names source->destination (may be empty)
+		    'steps'             : int steps executed
+		    'source_spiked'     : bool whether source spiked during run
+		    'remaining_backward': int count of backward edges left after pruning
+		"""
+		bundle = self.fugu_graph.graph.get('loihi_gs') or {}
+		dst = bundle.get('destination_neuron')
+		src = bundle.get('source_neuron')
+		if not src or not dst:
+			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
+		if dst not in self.nn.nrns or src not in self.nn.nrns:
+			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
+
+		# Prime initial destination spike (time 0)
+		dest_neuron = self.nn.nrns[dst]
+		dest_neuron.spike = True
+		dest_neuron.spike_hist.append(True)
+
+		limit = int(n_steps) if n_steps is not None else max(10, 10 * len(self.fugu_graph.nodes))
+		steps = 0
+		source_spiked = self.nn.nrns[src].spike
+		last_diag = {'zeroed': 0, 'remaining': len(self.remaining_backward_edges()), 'source_spiked': source_spiked}
+		while not source_spiked and steps < limit:
+			self.nn.step()
+			last_diag = self.prune_step()
+			steps += 1
+			source_spiked = last_diag.get('source_spiked', False) or self.nn.nrns[src].spike
+
+		path = self.reconstruct_path() if source_spiked else []
+		return {
+			'path': path,
+			'steps': steps,
+			'source_spiked': source_spiked,
+			'remaining_backward': len(self.remaining_backward_edges())
+		}
