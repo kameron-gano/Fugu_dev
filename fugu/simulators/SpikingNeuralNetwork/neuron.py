@@ -4,7 +4,7 @@
 import abc
 import numbers
 import sys
-
+from typing import Callable, Optional
 import numpy as np
 
 from fugu.utils.types import bool_types, float_types, str_types
@@ -14,6 +14,9 @@ if sys.version_info >= (3, 4):
     ABC = abc.ABC
 else:
     ABC = abc.ABCMeta("ABC", (), {"__slots__": ()})
+
+# compartment classes (moved to separate module)
+from .compartments import Dendrite, RecurrentInhibition, COMPARTMENT_REGISTRY
 
 
 class Neuron(ABC):
@@ -368,87 +371,6 @@ if __name__ == "__main__":
         n0.update_state()
         print(f"Time {i}: {n0.spike}")
 
-    def update_state(self):
-        """
-        Updates S-LCA neuron state for one time step.
-        
-        Implements:
-        1. Update synaptic traces: r_j[t] = decay * r_j[t-1] + spike_j[t-1]
-        2. Compute soma current: u_i[t] = b_i - sum_{j != i} w_ij * r_j[t]
-        3. Integrate voltage: dv_i/dt = u_i[t] - lambda
-        4. Check for spike and reset
-
-        Returns:
-            None
-        """
-        
-        # collect synaptic inputs (weighted spikes from other neurons)
-        synaptic_input = 0.0
-        if self.presyn:
-            for s in self.presyn:
-                if len(s._hist) > 0:
-                    synaptic_input += s._hist[0]  # This includes weights from synapses
-
-        # r_j[t] = decay * r_j[t-1] + spike_j[t-1]
-        self.lateral_inhibition = self.decay * self.lateral_inhibition + synaptic_input
-
-
-        # u_i[t] = b_i - lateral_inhibition (synaptic inputs are already weighted)
-        self.soma_current = self._b - self.lateral_inhibition
-
-        # dv_i/dt = u_i[t] - lambda
-        dv = self.dt * (self.soma_current - self.lam)
-        self.v += dv
-        
-        # spike detection and reset
-        if self.v >= self._T:
-            self.spike = True
-            self.v = self._R  # Reset voltage (typically 0.0)
-        else:
-            self.spike = False
-            # No leakage for S-LCA - pure integrator
-
-        # Record spike history
-        self.spike_hist.append(self.spike)
-
-"""
-    def slca_step(self):
-        # update decays of inhibitory spikes based on spike history
-        self.inhibition = self.decay*self.inhibition + self.spikes_prev
-
-        # update soma current
-        self.soma_current = self.b - (self.W @ (self.inhibition / self.tau))
-
-        # integrate the change in soma current for this time step
-        self.int_soma_current += self.soma_current * self.dt
-
-        # Direct voltage integration: v += dt * (mu - lam)
-        for name, n in self.nn.nrns.items():
-            if "begin" in name or "complete" in name:
-                continue
-            # Extract neuron index from name
-            idx = int(name.split('_')[-1])
-            # Direct S-LCA voltage update
-            dv = self.dt * (self.soma_current[idx] - self.lam)
-            n.v += dv
-            # Check for spike and reset
-            if n.v >= n.threshold:
-                n.spike_hist.append(True)
-                n.v = 0.0  # Reset
-            else:
-                n.spike_hist.append(False)
-        
-        # Don't run the neural network - we're handling integration manually
-
-        # Extract spike information from what we just computed
-        new_spikes = np.zeros(self.N, dtype=float)
-        for name, n in self.nn.nrns.items():  
-            if "begin" in name or "complete" in name:
-                continue
-            idx = int(name.split('_')[-1])
-            new_spikes[idx] = 1.0 if (n.spike_hist and n.spike_hist[-1]) else 0.0
-        self.spikes_prev = new_spikes
-"""
 
 
 class Dendrite(ABC):
@@ -552,13 +474,6 @@ class RecurrentInhibition(Dendrite):
     def __repr__(self):
         return f"RecurrentInhibition(tau_syn={self.tau_syn}, dt={self.dt})"
 
-
-# Registry of available dendritic compartments by name
-COMPARTMENT_REGISTRY = {
-    "RecurrentInhibition": RecurrentInhibition,
-}
-
-
 class GeneralNeuron(LIFNeuron):
     """
     General-purpose neuron that exposes the same public interface as ``LIFNeuron``
@@ -579,6 +494,7 @@ class GeneralNeuron(LIFNeuron):
         p=1.0,
         record=False,
         compartment=None,
+        spike_thresh_lambda: Callable[[float], bool] = None,
     ):
         """
         Mirrors ``LIFNeuron`` signature and adds an optional ``compartment`` field.
