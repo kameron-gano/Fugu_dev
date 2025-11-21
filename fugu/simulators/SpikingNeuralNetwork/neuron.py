@@ -123,18 +123,18 @@ class LIFNeuron(Neuron):
         self.record = record
         self.prob = p
 
-    def update_state(self):
+    def update_state(self, spike_thresh_lambda: Optional[Callable[[float], bool]] = None):
         """
         Updates the time evolution of the states for one time step.
         The input signals are integrated and accumulates with the internal voltage.
         If the internal voltage exceeds the threshold, the neuron spikes and resets.
-        Otherwise, the neruon leaks at a fixed rate down to its reset value.
+        Otherwise, the neuron leaks at a fixed rate down to its reset value.
         The neuron spikes with probability p if it exceeds the threshold.
 
         Returns:
             None
         """
-        """Update the states for one time step"""
+        # Update the states for one time step
 
         input_v = 0.0
         if self.presyn:
@@ -144,7 +144,16 @@ class LIFNeuron(Neuron):
 
         self.v = self.v + input_v + self._b
 
-        if self.v > self._T:
+        # Decide spiking via optional lambda if provided, else default v > T
+        if spike_thresh_lambda is not None:
+            try:
+                spike_condition = bool(spike_thresh_lambda(self.v))
+            except Exception:
+                spike_condition = self.v > self._T
+        else:
+            spike_condition = self.v > self._T
+
+        if spike_condition:
             if np.random.random(1) <= self.prob:
                 self.spike = True
                 self.v = self._R
@@ -444,6 +453,22 @@ class GeneralNeuron(LIFNeuron):
         # Expose observables for diagnostics
         self.soma_current = 0.0
         self.lateral_inhibition = 0.0
+        # Store optional spike threshold lambda for soma decisions
+        self.spike_thresh_lambda = spike_thresh_lambda
+
+    def _soma_spike_decision(self, voltage: float) -> bool:
+        """Decide whether the soma should spike at current voltage.
+
+        Uses the user-supplied ``spike_thresh_lambda`` if provided, otherwise
+        defaults to ``voltage > self._T``. Any exception from the lambda
+        falls back to the default behaviour.
+        """
+        if self.spike_thresh_lambda is None:
+            return voltage > self._T
+        try:
+            return bool(self.spike_thresh_lambda(voltage))
+        except Exception:
+            return voltage > self._T
 
     def update_state(self):
         """
@@ -453,7 +478,7 @@ class GeneralNeuron(LIFNeuron):
         overrides. This makes interaction fully customizable by the compartment.
         """
         if self.compartment is None:
-            super(GeneralNeuron, self).update_state()
+            super(GeneralNeuron, self).update_state(spike_thresh_lambda=self.spike_thresh_lambda)
             return
 
         # Define a helper that runs one LIF step under temporary overrides
@@ -465,7 +490,10 @@ class GeneralNeuron(LIFNeuron):
                     self._b = float(bias)
                 if ignore_presyn:
                     self.presyn = set()
-                super(GeneralNeuron, self).update_state()
+                # Always delegate to base LIF update, passing any custom lambda
+                super(GeneralNeuron, self).update_state(
+                    spike_thresh_lambda=self.spike_thresh_lambda
+                )
             finally:
                 self._b = old_bias
                 self.presyn = old_presyn
