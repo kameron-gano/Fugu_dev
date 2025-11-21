@@ -17,8 +17,9 @@ onto auxiliary single-fanout nodes as described in the paper.
 This file provides `LoihiGSBrick` which follows the Fugu `Brick` API.
 """
 
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple, Optional
 from .bricks import Brick
+from fugu.scaffold.port import ChannelSpec, PortSpec, PortUtil
 
 import networkx as nx
 
@@ -44,10 +45,16 @@ class LoihiGSBrick(Brick):
     def __init__(self,
                  input_graph: Any,
                  name: str = "LoihiGS",
-                 require_integer_costs: bool = True):
+                 require_integer_costs: bool = True,
+                 source: Optional[Any] = None,
+                 destination: Optional[Any] = None):
         super().__init__(name=name)
         self.input_graph = input_graph
         self.require_integer_costs = require_integer_costs
+        # Optional designated start (source) and goal (destination) nodes in the
+        # ORIGINAL input graph's label space. We'll map them to neuron names.
+        self.source = source
+        self.destination = destination
         
 
         # Populated after preprocess
@@ -180,10 +187,14 @@ class LoihiGSBrick(Brick):
         Nodes are added with names generated via `self.generate_neuron_name` and
         edges are added with attributes 'weight' and 'delay' (integers).
         """
+        n = len(nodes)
+        # Pre-allocate adjacency structures for downstream runtime support
+        backward_adj = [[0 for _ in range(n)] for _ in range(n)]
+
         # create neurons
-        for idx, n in enumerate(nodes):
-            neuron_name = self.generate_neuron_name(str(n))
-            self.node_to_neuron[n] = neuron_name
+        for idx, label in enumerate(nodes):
+            neuron_name = self.generate_neuron_name(str(label))
+            self.node_to_neuron[label] = neuron_name
             # default neuron properties (consistent with other bricks)
             graph.add_node(neuron_name,
                            index=idx,
@@ -192,6 +203,12 @@ class LoihiGSBrick(Brick):
                            p=1.0,
                            potential=0.0)
 
+        # Mark source/destination if provided
+        if self.source is not None and self.source in self.node_to_neuron:
+            graph.nodes[self.node_to_neuron[self.source]]["is_source"] = True 
+        if self.destination is not None and self.destination in self.node_to_neuron:
+            graph.nodes[self.node_to_neuron[self.destination]]["is_destination"] = True
+
         # add synapses (forward + backward)
         for u, v, c in edges:
             if c < 1:
@@ -199,40 +216,81 @@ class LoihiGSBrick(Brick):
             pre = self.node_to_neuron[u]
             post = self.node_to_neuron[v]
             # forward synapse i -> j with delay 0
-            graph.add_edge(pre, post, weight=1.0, delay=0)
+            graph.add_edge(pre, post, weight=1.0, delay=0, direction="forward")
             # backward synapse j -> i with delay c - 1
             bdelay = c - 1
-            graph.add_edge(post, pre, weight=1.0, delay=int(bdelay))
+            graph.add_edge(post, pre, weight=1.0, delay=int(bdelay), direction="backward")
 
-    # ---- public API/Brick build ----
-    def build(self, graph: nx.DiGraph, metadata, control_nodes, input_lists, input_codings):
-        """Build the Loihi graph-search SNN inside the provided networkx DiGraph.
+            # Fill adjacency helpers
+            i = graph.nodes[pre]["index"]
+            j = graph.nodes[post]["index"]
+            backward_adj[j][i] = 1
+            # We don't need to store delays for the zeroing workflow; only
+            # which backward synapses exist (to be zeroed) is required.
 
-        This method mutates `graph` by adding neurons and synapses. It returns
-        the expected Fugu `Brick.build` tuple.
+        # Store a compact runtime bundle on the graph for zero-out workflows
+        graph.graph.setdefault("loihi_gs", {})
+        graph.graph["loihi_gs"].update({
+            "node_list": list(nodes),
+            "node_to_neuron": dict(self.node_to_neuron),
+            "source": self.source,
+            "destination": self.destination,
+            "source_neuron": self.node_to_neuron.get(self.source) if self.source in self.node_to_neuron else None,
+            "destination_neuron": self.node_to_neuron.get(self.destination) if self.destination in self.node_to_neuron else None,
+            "adj_backward": backward_adj,
+        })
+
+
+    @classmethod
+    def input_ports(cls) -> dict[str, PortSpec]:
+        """Graph-search brick does not consume upstream ports."""
+        return {}
+
+    @classmethod
+    def output_ports(cls) -> dict[str, PortSpec]:
+        """Single output port exposing all neuron names.
+
+        The wavefront / shortest-path dynamics are internal; users may wish
+        to observe all neuron spikes, so we expose them under a 'data' channel.
+        Coding left as 'Raster' (spike times) or 'Undefined' if downstream
+        bricks treat them generically.
         """
-        # parse
+        port = PortSpec(name='output')
+        port.channels['data'] = ChannelSpec(name='data', coding=['Raster', 'Undefined'])
+        return {port.name: port}
+
+    # ------------------------------------------------------------------
+    # Internal construction routine shared by legacy build and build2
+    # ------------------------------------------------------------------
+    def _construct(self, graph: nx.DiGraph):
+        # Parse input graph
         nodes, edges = self._parse_input()
 
-        # require input graph to be (weakly) connected
-        tg_in = nx.DiGraph()
-        tg_in.add_nodes_from(nodes)
+        # Connectivity check (weakly connected)
+        tmp_g = nx.DiGraph()
+        tmp_g.add_nodes_from(nodes)
         for u, v, c in edges:
-            tg_in.add_edge(u, v)
-        if not nx.is_weakly_connected(tg_in):
-            raise ValueError("Input graph is not (weakly) connected")
+            tmp_g.add_edge(u, v, cost=c)
+        if not nx.is_weakly_connected(tmp_g):
+            raise ValueError("Input graph must be weakly connected for LoihiGSBrick")
 
-        # preprocess fan-out
-        nodes2, edges2 = self._preprocess_fanout(nodes, edges)
+        # Fan-out preprocessing (auxiliary nodes)
+        proc_nodes, proc_edges = self._preprocess_fanout(nodes, edges)
 
-        # map to Loihi neuron/synapse network
-        self._map_to_loihi(graph, nodes2, edges2)
+        # Map to Loihi-style neurons & synapses
+        self._map_to_loihi(graph, proc_nodes, proc_edges)
 
-        # this brick does not provide standard output ports; return minimal structures
-        output_lists = [[]]
-        output_codings = ['Undefined']
-        # control nodes: none by default
-        return (graph, {}, [], output_lists, output_codings)
+        # Persist for introspection
+        self.node_list = proc_nodes
+        self.edges = proc_edges
+        self.is_built = True
+        return [self.node_to_neuron[n] for n in proc_nodes]
 
+    def build2(self, graph, inputs: dict = {}):  
+        neuron_names = self._construct(graph)
+        result = PortUtil.make_ports_from_specs(LoihiGSBrick.output_ports())
+        output_port = result['output']
+        data_channel = output_port.channels['data']
+        data_channel.neurons = neuron_names
+        return result
 
-__all__ = ['LoihiGSBrick']
