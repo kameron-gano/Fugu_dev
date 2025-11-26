@@ -183,10 +183,10 @@ class gsearch_Backend(snn_Backend):
 		if dst not in self.nn.nrns or src not in self.nn.nrns:
 			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
 
-		# Prime initial destination spike (time 0)
-		dest_neuron = self.nn.nrns[dst]
-		dest_neuron.spike = True
-		dest_neuron.spike_hist.append(True)
+		# # Prime initial destination spike (time 0)
+		# dest_neuron = self.nn.nrns[dst]
+		# dest_neuron.spike = True
+		# dest_neuron.spike_hist.append(True)
 
 		limit = int(n_steps) if n_steps is not None else max(10, 10 * len(self.fugu_graph.nodes))
 		steps = 0

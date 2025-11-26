@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Loihi Graph-Search Brick
+"""
+Loihi Graph-Search Brick
 
 every directed edge (i -> j) is mapped to:
 This brick implements the preprocessing and mapping described in the
@@ -18,12 +19,13 @@ onto auxiliary single-fanout nodes as described in the paper.
 This file provides `LoihiGSBrick` which follows the Fugu `Brick` API.
 """
 
+
+
 from typing import Any, Dict, Iterable, List, Tuple, Optional
 from .bricks import Brick
 from fugu.scaffold.port import ChannelSpec, PortSpec, PortUtil
 
 import networkx as nx
-
 
 class LoihiGSBrick(Brick):
     """Brick that converts a weighted directed graph into a Loihi graph-search SNN.
@@ -196,13 +198,21 @@ class LoihiGSBrick(Brick):
         for idx, label in enumerate(nodes):
             neuron_name = self.generate_neuron_name(str(label))
             self.node_to_neuron[label] = neuron_name
+            if neuron_name == self.node_to_neuron.get(self.destination):
+                graph.add_node(neuron_name,
+                    index=idx,
+                    threshold=0.9,
+                    decay=0,
+                    p=1.0,
+                    potential=1.0)
+            else:
             # default neuron properties (consistent with other bricks)
-            graph.add_node(neuron_name,
-                           index=idx,
-                           threshold=0.9,
-                           decay=0,
-                           p=1.0,
-                           potential=0.0)
+                graph.add_node(neuron_name,
+                            index=idx,
+                            threshold=0.9,
+                            decay=0,
+                            p=1.0,
+                            potential=0.0)
 
         # Mark source/destination if provided
         if self.source is not None and self.source in self.node_to_neuron:
