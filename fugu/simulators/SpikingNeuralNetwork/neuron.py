@@ -381,6 +381,64 @@ if __name__ == "__main__":
         print(f"Time {i}: {n0.spike}")
 
 
+# ============================================================================
+# Spike Criteria Registry
+# ============================================================================
+# This registry allows users to define custom spiking criteria for neurons.
+# Each entry is a callable that takes (neuron, voltage) and returns bool.
+# The neuron parameter allows access to threshold and previous state.
+
+SPIKE_CRITERIA_REGISTRY = {}
+
+
+def register_spike_criterion(name: str):
+    """Decorator to register a spike criterion function.
+    
+    Args:
+        name: Registry key for this criterion
+        
+    Example:
+        @register_spike_criterion('my_criterion')
+        def my_criterion(neuron, voltage):
+            return voltage > neuron._T
+    """
+    def decorator(func):
+        SPIKE_CRITERIA_REGISTRY[name] = func
+        return func
+    return decorator
+
+
+@register_spike_criterion('default')
+def default_spike_criterion(neuron, voltage):
+    """Standard LIF spiking: spike when voltage exceeds threshold."""
+    return voltage > neuron._T
+
+
+@register_spike_criterion('loihi_wavefront')
+def loihi_wavefront_criterion(neuron, voltage):
+    """Loihi graph-search wavefront propagation criterion.
+    
+    Spike only when:
+    1. Current voltage >= threshold, AND
+    2. Previous voltage < threshold (rising edge detection)
+    
+    This implements the ADVANCEWAVEFRONT logic from Algorithm 1:
+    s_i[t+1] = 1 if v_i[t+1] >= 1 AND v_i[t] < 1
+    
+    After spiking, the neuron should reset to a value >= threshold
+    to prevent further spikes.
+    """
+    # Check if we have previous voltage stored
+    prev_voltage = getattr(neuron, '_prev_voltage', None)
+    
+    # Rising edge: was below threshold, now at or above
+    if prev_voltage is None:
+        # First timestep: allow spike if above threshold
+        return voltage >= neuron._T
+    
+    return (voltage >= neuron._T) and (prev_voltage < neuron._T)
+
+
 class GeneralNeuron(LIFNeuron):
     """
     General-purpose neuron that exposes the same public interface as ``LIFNeuron``
@@ -402,9 +460,10 @@ class GeneralNeuron(LIFNeuron):
         record=False,
         compartment=None,
         spike_thresh_lambda: Callable[[float], bool] = None,
+        spike_criterion: str = None,
     ):
         """
-        Mirrors ``LIFNeuron`` signature and adds an optional ``compartment`` field.
+        Mirrors ``LIFNeuron`` signature and adds optional ``compartment`` and ``spike_criterion`` fields.
 
         Args:
             compartment (dict | None):
@@ -413,6 +472,10 @@ class GeneralNeuron(LIFNeuron):
                   'name' is optional and defaults to 'RecurrentInhibition'.
                   Remaining keys are passed as kwargs to the compartment ctor and
                   must match parameter names exactly.
+            spike_criterion (str | None):
+                - None: use spike_thresh_lambda if provided, else default behavior
+                - str: key into SPIKE_CRITERIA_REGISTRY for custom spiking logic
+                  Available: 'default', 'loihi_wavefront', or custom registered criteria
         """
         super(GeneralNeuron, self).__init__(
             name=name,
@@ -453,21 +516,45 @@ class GeneralNeuron(LIFNeuron):
         # Expose observables for diagnostics
         self.soma_current = 0.0
         self.lateral_inhibition = 0.0
-        # Store optional spike threshold lambda for soma decisions
+        
+        # Spike criterion selection (priority: criterion string > lambda > default)
+        self.spike_criterion = spike_criterion
         self.spike_thresh_lambda = spike_thresh_lambda
+        
+        # Track previous voltage for wavefront-style criteria
+        self._prev_voltage = None
 
     def _soma_spike_decision(self, voltage: float) -> bool:
         """Decide whether the soma should spike at current voltage.
 
-        Uses the user-supplied ``spike_thresh_lambda`` if provided, otherwise
-        defaults to ``voltage > self._T``. Any exception from the lambda
-        falls back to the default behaviour.
+        Priority order:
+        1. spike_criterion (registry lookup)
+        2. spike_thresh_lambda (direct callable)
+        3. default (voltage > threshold)
+        
+        Any exception falls back to default behaviour.
         """
-        if self.spike_thresh_lambda is None:
-            return voltage > self._T
         try:
-            return bool(self.spike_thresh_lambda(voltage))
+            # Priority 1: Use registered criterion if specified
+            if self.spike_criterion is not None:
+                criterion_func = SPIKE_CRITERIA_REGISTRY.get(self.spike_criterion)
+                if criterion_func is None:
+                    available = list(SPIKE_CRITERIA_REGISTRY.keys())
+                    raise ValueError(
+                        f"Unknown spike criterion '{self.spike_criterion}'. "
+                        f"Available: {available}"
+                    )
+                return bool(criterion_func(self, voltage))
+            
+            # Priority 2: Use lambda if provided
+            if self.spike_thresh_lambda is not None:
+                return bool(self.spike_thresh_lambda(voltage))
+            
+            # Priority 3: Default behavior
+            return voltage > self._T
+            
         except Exception:
+            # Fallback to default on any error
             return voltage > self._T
 
     def update_state(self):
@@ -476,9 +563,16 @@ class GeneralNeuron(LIFNeuron):
         If a compartment is attached, delegate to the compartment's ``update``
         method with a callback to perform the LIF update under temporary
         overrides. This makes interaction fully customizable by the compartment.
+        
+        Also tracks previous voltage for wavefront-style spike criteria.
         """
+        # Store current voltage before update
+        self._prev_voltage = self.v
+        
         if self.compartment is None:
-            super(GeneralNeuron, self).update_state(spike_thresh_lambda=self.spike_thresh_lambda)
+            # Create a wrapper lambda that uses _soma_spike_decision
+            spike_lambda = lambda v: self._soma_spike_decision(v)
+            super(GeneralNeuron, self).update_state(spike_thresh_lambda=spike_lambda)
             return
 
         # Define a helper that runs one LIF step under temporary overrides
@@ -490,9 +584,10 @@ class GeneralNeuron(LIFNeuron):
                     self._b = float(bias)
                 if ignore_presyn:
                     self.presyn = set()
-                # Always delegate to base LIF update, passing any custom lambda
+                # Always delegate to base LIF update, using _soma_spike_decision
+                spike_lambda = lambda v: self._soma_spike_decision(v)
                 super(GeneralNeuron, self).update_state(
-                    spike_thresh_lambda=self.spike_thresh_lambda
+                    spike_thresh_lambda=spike_lambda
                 )
             finally:
                 self._b = old_bias

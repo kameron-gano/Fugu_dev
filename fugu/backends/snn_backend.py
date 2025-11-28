@@ -53,6 +53,7 @@ class snn_Backend(Backend):
             if neuron_type == 'GeneralNeuron':
 
                 compartment = props.get('compartment', None)
+                spike_criterion = props.get('spike_criterion', None)
                 leakage_constant = props.get('leakage_constant', Vretain)
                 n = GeneralNeuron(
                     name=neuron,
@@ -64,6 +65,7 @@ class snn_Backend(Backend):
                     p=P,
                     record=recordAll,
                     compartment=compartment,
+                    spike_criterion=spike_criterion,
                 )
             else:
                 # Default to LIFNeuron

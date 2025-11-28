@@ -139,6 +139,22 @@ class LoihiGSBrick(Brick):
 
         raise ValueError("Unsupported input_graph format")
 
+    def _reverse_graph(self, nodes: List[Any], edges: List[Tuple[Any, Any, int]]):
+        """Reverse all edges in the graph for Loihi wavefront propagation.
+        
+        The Loihi graph-search algorithm propagates a wavefront from destination
+        back to source, so we must reverse the graph: every edge (u -> v) becomes (v -> u).
+        
+        Args:
+            nodes: List of node identifiers
+            edges: List of (source, dest, cost) tuples
+            
+        Returns:
+            Tuple of (nodes, reversed_edges) where reversed_edges are (dest, source, cost)
+        """
+        reversed_edges = [(v, u, c) for u, v, c in edges]
+        return nodes, reversed_edges
+
     def _preprocess_fanout(self, nodes: List[Any], edges: List[Tuple[Any, Any, int]]):
         """Enforce fan-out constraint by pushing cost onto auxiliary single-fanout nodes.
 
@@ -198,21 +214,17 @@ class LoihiGSBrick(Brick):
         for idx, label in enumerate(nodes):
             neuron_name = self.generate_neuron_name(str(label))
             self.node_to_neuron[label] = neuron_name
-            if neuron_name == self.node_to_neuron.get(self.destination):
-                graph.add_node(neuron_name,
-                    index=idx,
-                    threshold=0.9,
-                    decay=0,
-                    p=1.0,
-                    potential=1.0)
-            else:
-            # default neuron properties (consistent with other bricks)
-                graph.add_node(neuron_name,
-                            index=idx,
-                            threshold=0.9,
-                            decay=0,
-                            p=1.0,
-                            potential=0.0)
+            # All neurons use loihi_wavefront criterion
+            # Reset to 1.0 (>= threshold) after spiking to prevent re-spiking
+            graph.add_node(neuron_name,
+                index=idx,
+                threshold=0.9,
+                decay=0,
+                p=1.0,
+                potential=0.0,
+                reset_voltage=1.0,
+                neuron_type='GeneralNeuron',
+                spike_criterion='loihi_wavefront')
 
         # Mark source/destination if provided
         if self.source is not None and self.source in self.node_to_neuron:
@@ -277,6 +289,10 @@ class LoihiGSBrick(Brick):
         # Parse input graph
         nodes, edges = self._parse_input()
 
+        # CRITICAL: Reverse the graph for wavefront propagation
+        # The algorithm propagates from destination -> source, so all edges must be reversed
+        nodes, edges = self._reverse_graph(nodes, edges)
+
         # Connectivity check (weakly connected)
         tmp_g = nx.DiGraph()
         tmp_g.add_nodes_from(nodes)
@@ -285,7 +301,7 @@ class LoihiGSBrick(Brick):
         if not nx.is_weakly_connected(tmp_g):
             raise ValueError("Input graph must be weakly connected for LoihiGSBrick")
 
-        # Fan-out preprocessing (auxiliary nodes)
+        # Fan-out preprocessing (auxiliary nodes) - applied AFTER reversal
         proc_nodes, proc_edges = self._preprocess_fanout(nodes, edges)
 
         # Map to Loihi-style neurons & synapses

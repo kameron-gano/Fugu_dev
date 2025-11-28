@@ -100,10 +100,12 @@ class gsearch_Backend(snn_Backend):
 		"""
 		Reconstruct forward path from source to destination after pruning.
 
-		Assumes all necessary backward edges have been zeroed and remaining
-		forward edges (direction=='forward', weight>0) form a tree/unique path.
-		Returns list of neuron names from source to destination. Empty list if
-		source/destination not known or path not found.
+		After graph reversal, forward edges go from destination toward source.
+		We follow forward edges from destination to source, then reverse the path
+		to get source -> destination in the original graph orientation.
+		
+		Returns list of neuron names from source to destination (original graph).
+		Empty list if source/destination not known or path not found.
 		"""
 		bundle = self.fugu_graph.graph.get('loihi_gs') or {}
 		src = bundle.get('source_neuron')
@@ -112,13 +114,15 @@ class gsearch_Backend(snn_Backend):
 			return []
 		if src not in self.fugu_graph or dst not in self.fugu_graph:
 			return []
-		path = [src]
-		self.current_hop = src
-		visited = {src}
+		
+		# Start from destination and follow forward edges to source
+		path = [dst]
+		self.current_hop = dst
+		visited = {dst}
 		# Hard cap to avoid infinite loops on malformed graphs
 		limit = len(self.fugu_graph.nodes)
 		steps = 0
-		while self.current_hop != dst and steps < limit:
+		while self.current_hop != src and steps < limit:
 			nxt = self.readout_next_hop()
 			if nxt is None or nxt in visited:
 				return []  # no unique path
@@ -126,9 +130,11 @@ class gsearch_Backend(snn_Backend):
 			visited.add(nxt)
 			self.current_hop = nxt
 			steps += 1
-		if self.current_hop != dst:
+		if self.current_hop != src:
 			return []
-		return path
+		
+		# Reverse to get source -> destination ordering
+		return list(reversed(path))
 
 
 	def prune_step(self) -> dict[str, Any]:
@@ -183,13 +189,21 @@ class gsearch_Backend(snn_Backend):
 		if dst not in self.nn.nrns or src not in self.nn.nrns:
 			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
 
-		# # Prime initial destination spike (time 0)
-		# dest_neuron = self.nn.nrns[dst]
-		# dest_neuron.spike = True
-		# dest_neuron.spike_hist.append(True)
-
+		# Prime initial destination spike (Algorithm line 21: s_dst[0] <- 1)
+		# Manually trigger destination spike on first step by injecting current
+		# We'll add a large bias for one step, then remove it
+		dest_neuron = self.nn.nrns[dst]
+		original_bias = dest_neuron._b
+		dest_neuron._b = 2.0  # Large bias to push above threshold on first step
+		
+		# Run one step to trigger destination spike
+		self.nn.step()
+		steps = 1
+		
+		# Restore original bias
+		dest_neuron._b = original_bias
+		
 		limit = int(n_steps) if n_steps is not None else max(10, 10 * len(self.fugu_graph.nodes))
-		steps = 0
 		source_spiked = self.nn.nrns[src].spike
 		last_diag = {'zeroed': 0, 'remaining': len(self.remaining_backward_edges()), 'source_spiked': source_spiked}
 		while not source_spiked and steps < limit:
