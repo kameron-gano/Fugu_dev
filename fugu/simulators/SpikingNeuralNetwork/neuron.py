@@ -459,7 +459,6 @@ class GeneralNeuron(LIFNeuron):
         p=1.0,
         record=False,
         compartment=None,
-        spike_thresh_lambda: Callable[[float], bool] = None,
         spike_criterion: str = None,
     ):
         """
@@ -473,7 +472,7 @@ class GeneralNeuron(LIFNeuron):
                   Remaining keys are passed as kwargs to the compartment ctor and
                   must match parameter names exactly.
             spike_criterion (str | None):
-                - None: use spike_thresh_lambda if provided, else default behavior
+                - None: use default behavior (voltage > threshold)
                 - str: key into SPIKE_CRITERIA_REGISTRY for custom spiking logic
                   Available: 'default', 'loihi_wavefront', or custom registered criteria
         """
@@ -517,9 +516,8 @@ class GeneralNeuron(LIFNeuron):
         self.soma_current = 0.0
         self.lateral_inhibition = 0.0
         
-        # Spike criterion selection (priority: criterion string > lambda > default)
+        # Spike criterion selection
         self.spike_criterion = spike_criterion
-        self.spike_thresh_lambda = spike_thresh_lambda
         
         # Track previous voltage for wavefront-style criteria
         self._prev_voltage = None
@@ -527,15 +525,11 @@ class GeneralNeuron(LIFNeuron):
     def _soma_spike_decision(self, voltage: float) -> bool:
         """Decide whether the soma should spike at current voltage.
 
-        Priority order:
-        1. spike_criterion (registry lookup)
-        2. spike_thresh_lambda (direct callable)
-        3. default (voltage > threshold)
-        
+        Uses spike_criterion registry if specified, otherwise default behavior.
         Any exception falls back to default behaviour.
         """
         try:
-            # Priority 1: Use registered criterion if specified
+            # Use registered criterion if specified
             if self.spike_criterion is not None:
                 criterion_func = SPIKE_CRITERIA_REGISTRY.get(self.spike_criterion)
                 if criterion_func is None:
@@ -546,11 +540,7 @@ class GeneralNeuron(LIFNeuron):
                     )
                 return bool(criterion_func(self, voltage))
             
-            # Priority 2: Use lambda if provided
-            if self.spike_thresh_lambda is not None:
-                return bool(self.spike_thresh_lambda(voltage))
-            
-            # Priority 3: Default behavior
+            # Default behavior
             return voltage > self._T
             
         except Exception:
