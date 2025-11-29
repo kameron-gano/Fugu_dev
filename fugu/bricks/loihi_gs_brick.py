@@ -143,7 +143,12 @@ class LoihiGSBrick(Brick):
         """Enforce fan-out constraint by pushing cost onto auxiliary single-fanout nodes.
 
         For any node i with outdegree > 1, replace outgoing edge (i->j, c>1)
-        with (i->u_ij, cost=1) and (u_ij->j, cost=c-1).
+        with (i->u_ij, cost=1) and (u_ij->j, cost=c).
+        
+        This preserves total backward delay:
+        - In Loihi: d_{i,j} = c - 1
+        - After split: d_{aux,i} = 0 and d_{j,aux} = c - 1, total = c - 1 ✓
+        - In Fugu (min delay=1): we add 1 to all delays during synapse creation
         """
         # build adjacency map to compute outdegree
         out_map: Dict[Any, List[Tuple[Any, int]]] = {}
@@ -153,7 +158,9 @@ class LoihiGSBrick(Brick):
         new_nodes = list(nodes)
         new_edges: List[Tuple[Any, Any, int]] = []
 
-        for u in new_nodes:
+        # Only process original nodes (not auxiliary nodes created during this loop)
+        original_nodes = list(nodes)
+        for u in original_nodes:
             out = out_map.get(u, [])
             if len(out) <= 1:
                 # keep edges as-is
@@ -175,9 +182,10 @@ class LoihiGSBrick(Brick):
                         aux = f"{base}_{k}"
                         k += 1
                     new_nodes.append(aux)
-                    # replace edge
+                    # First edge satisfies fanout constraint (cost=1)
                     new_edges.append((u, aux, 1))
-                    new_edges.append((aux, v, c - 1))
+                    # Second edge carries original cost to preserve total backward delay
+                    new_edges.append((aux, v, c))
 
         # also add edges from nodes that originally had no outgoing entries
         # (covered by building from original edges above)
@@ -226,9 +234,12 @@ class LoihiGSBrick(Brick):
                 raise ValueError(f"Edge cost must be >=1, got {c} for {u}->{v}")
             pre = self.node_to_neuron[u]
             post = self.node_to_neuron[v]
-            # forward synapse i -> j with delay 1 (minimum delay is now 1)
+            # forward synapse i -> j: weight=1, delay=1 (for readout, fixed)
             graph.add_edge(pre, post, weight=1.0, delay=1, direction="forward")
-            # backward synapse j -> i with delay equal to original cost c
+            # backward synapse j -> i: encodes cost in delay
+            # Loihi algorithm: d_{j,i} = c_{i,j} - 1 (can be 0)
+            # Fugu constraint: minimum delay = 1
+            # Solution: set delay = c (equivalent to Loihi's c-1, shifted by +1)
             bdelay = c
             graph.add_edge(post, pre, weight=1.0, delay=int(bdelay), direction="backward")
 
