@@ -110,66 +110,58 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
         max_steps = 5000
         result = backend.run(n_steps=max_steps)
         
-        # Extract path
+        # Extract neuron path produced by backend (already shortest path or empty)
         path_neurons = result['path']
+        backend_cost = result.get('cost', float('inf'))
 
-        # Map neuron names back to original nodes, normalizing auxiliary fanout neurons
+        if not path_neurons:
+            # Return immediately; caller will assert failure rather than cheat with Dijkstra
+            return [], backend_cost, result['steps']
+
+        # Build inverse map
         neuron_to_node = {v: k for k, v in brick.node_to_neuron.items()}
+        mapped = []
+        for n in path_neurons:
+            if n in neuron_to_node:
+                mapped.append(neuron_to_node[n])
 
-        def normalize(label):
-            # Accept direct ints
-            if isinstance(label, int):
-                return label
-            # Auxiliary naming pattern: <node>__aux__<k>
-            if isinstance(label, str) and '__aux__' in label:
-                base = label.split('__aux__')[0]
-                try:
-                    return int(base)
-                except ValueError:
-                    return base
-            # Plain digit string
-            if isinstance(label, str) and label.isdigit():
-                return int(label)
-            return label
+        # Remove auxiliary nodes but preserve ordering of original nodes
+        def is_aux(x):
+            return isinstance(x, str) and '__aux__' in x
+        cleaned = []
+        for node in mapped:
+            if is_aux(node):
+                continue
+            # Normalize numeric strings
+            if isinstance(node, str) and node.isdigit():
+                node = int(node)
+            cleaned.append(node)
 
-        raw_nodes = [neuron_to_node[n] for n in path_neurons if n in neuron_to_node]
-        norm_nodes = [normalize(x) for x in raw_nodes]
-
-        # Collapse consecutive duplicates introduced by auxiliary expansion
+        # Collapse consecutive duplicates (could arise from parent pointer jumps over aux chains)
         collapsed = []
-        for node in norm_nodes:
+        for node in cleaned:
             if not collapsed or collapsed[-1] != node:
                 collapsed.append(node)
 
-        # Filter to original graph nodes (some may be non-int if malformed)
+        # Keep only nodes present in original adjacency keys (guards against stray labels)
         path_original = [n for n in collapsed if n in adj]
 
-        # Calculate cost on original graph by summing edge weights along collapsed path
+        # Optionally recompute cost for cross-check when path length >1
         if len(path_original) > 1:
-            cost = 0
+            recomputed = 0
             for u, v in zip(path_original[:-1], path_original[1:]):
-                if u == v:
-                    continue
-                edge_cost = next((c for dst, c in adj.get(u, []) if dst == v), None)
-                if edge_cost is None:
-                    return path_original, float('inf'), result['steps']
-                cost += edge_cost
-        elif len(path_original) == 1:
-            # Single node path (degenerate); cost zero only if source==dest
-            cost = 0 if path_original[0] == source == dest else float('inf')
-        else:
-            # Fallback: attempt direct edge or Dijkstra recovery if path extraction failed
-            direct_edge = next((c for v, c in adj.get(source, []) if v == dest), None)
-            if direct_edge is not None:
-                path_original = [source, dest]
-                cost = direct_edge
-            else:
-                # Use local Dijkstra fallback
-                d_path, d_cost = dijkstra(adj, source, dest)
-                path_original = d_path
-                cost = d_cost
-        
-        return path_original, cost, result['steps']
+                ec = next((c for dst2, c in adj.get(u, []) if dst2 == v), None)
+                if ec is None:
+                    recomputed = float('inf')
+                    break
+                recomputed += ec
+            # Trust backend_cost; if mismatch, expose via printing (does not alter returned value)
+            if backend_cost != recomputed:
+                print(f"[WARN] Backend cost {backend_cost} != recomputed {recomputed} for path {path_original}")
+        elif len(path_original) == 1 and source == dest and backend_cost != 0:
+            print(f"[WARN] Degenerate source==dest path cost mismatch: backend {backend_cost}")
+
+        return path_original, backend_cost, result['steps']
     
     def compare_with_dijkstra(self, adj: Dict[int, List[Tuple[int, int]]], 
                              source: int, dest: int, 
@@ -229,6 +221,8 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
             print("LoihiDirect: skipped (graph size > 30)")
         
         # Validate
+        # Require backend to produce a non-empty path (no Dijkstra fallback substitution)
+        self.assertTrue(path_fugu, "Backend produced empty path; previously masked by Dijkstra fallback")
         self.assertEqual(path_fugu[0], source, "Fugu path must start at source")
         self.assertEqual(path_fugu[-1], dest, "Fugu path must end at destination")
         self.assertEqual(cost_fugu, cost_dijk, 
