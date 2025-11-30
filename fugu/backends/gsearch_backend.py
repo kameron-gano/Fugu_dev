@@ -256,7 +256,6 @@ class gsearch_Backend(snn_Backend):
 			last_diag = self.prune_step()
 			source_spiked = last_diag.get('source_spiked', False)
 		
-		# Line 26: One extra wavefront step after source spikes
 		if source_spiked and self.current_timestep < limit:
 			self.current_timestep += 1
 			self.nn.step()

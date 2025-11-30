@@ -13,6 +13,7 @@ and may require further backend tuning for specific edge cases.
 
 import unittest
 import os
+import time
 from typing import Dict, List, Tuple
 
 from fugu import Scaffold
@@ -484,8 +485,7 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
         # Source=0, Destination=n-1
         self.compare_with_dijkstra(adj, 0, n - 1, "Huge Fully Connected K100")
 
-    # ================== Construction / Transformation Tests (merged) ==================
-
+   
     def test_construction_preprocessing_mapping_basic(self):
         """Merged: test_loihi_gs_preprocessing_and_mapping basic auxiliary creation."""
         adj = {
@@ -706,6 +706,141 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
             else:
                 backward+=1; self.assertGreaterEqual(d.get('delay'),1)
         self.assertEqual(forward, backward)
+
+    @pytest.mark.skipif(not os.getenv('FUGU_PERF'), reason='Set FUGU_PERF=1 to enable dense performance comparison test')
+    def test_performance_dense_weird_graphs(self):
+        """Performance and correctness across multiple dense / pathological graphs.
+
+        Graphs:
+          1. DenseRandom80: Erdos-Renyi style dense directed (p=0.5) on 80 nodes.
+          2. TwoClusterBridge: Two 40-node cliques sparsely bridged.
+          3. HeavyFanoutLayered: 5 layers of size 15, fully connected layer-to-layer.
+          4. MixedCycleHybrid: 80 nodes partitioned into groups with internal cycles and random forward edges.
+
+        Measures wall-clock times for:
+          - Fugu (brick build + compile + run)
+          - Direct LoihiGraphSearch (preprocess + run)
+          - Dijkstra (heap-based)
+        Ensures all three return identical shortest path cost.
+        """
+        def dense_random_80():
+            import random
+            random.seed(7)
+            n=80; p=0.5
+            adj={i:[] for i in range(n)}
+            for i in range(n):
+                for j in range(n):
+                    if i==j: continue
+                    if random.random()<p:
+                        adj[i].append((j, random.randint(1,64)))
+            return adj,0,n-1,'DenseRandom80'
+
+        def two_cluster_bridge():
+            import random
+            random.seed(11)
+            c=40
+            adj={i:[] for i in range(2*c)}
+            # clique edges inside each cluster
+            for base in [0,c]:
+                for i in range(base, base+c):
+                    for j in range(base, base+c):
+                        if i!=j:
+                            adj[i].append((j, (1+((i*13+j*17)%64))))
+            # sparse bridges
+            bridges=50
+            for _ in range(bridges):
+                a=random.randint(0,c-1)
+                b=random.randint(c,2*c-1)
+                adj[a].append((b, random.randint(1,64)))
+                adj[b].append((a, random.randint(1,64)))
+            return adj,0,2*c-1,'TwoClusterBridge'
+
+        def heavy_fanout_layered():
+            import random
+            random.seed(19)
+            layers=5; size=15
+            nodes=[(L,i) for L in range(layers) for i in range(size)]
+            id_map={ (L,i): L*size+i for L,i in nodes }
+            adj={ id_map[(L,i)]:[] for L,i in nodes }
+            for L in range(layers-1):
+                for i in range(size):
+                    u=id_map[(L,i)]
+                    for j in range(size):
+                        v=id_map[(L+1,j)]
+                        adj[u].append((v, random.randint(1,64)))
+            # add destination sink
+            sink=layers*size
+            adj[sink]=[]
+            for i in range(size):
+                adj[id_map[(layers-1,i)]].append((sink, random.randint(1,64)))
+            return adj, id_map[(0,0)], sink, 'HeavyFanoutLayered'
+
+        def mixed_cycle_hybrid():
+            import random
+            random.seed(23)
+            n=80
+            group=8
+            adj={i:[] for i in range(n)}
+            # internal cycles per group
+            for g in range(n//group):
+                base=g*group
+                for k in range(group):
+                    u=base+k; v=base+((k+1)%group)
+                    adj[u].append((v, random.randint(1,64)))
+            # random forward edges between groups (DAG-ish)
+            for u in range(n):
+                for _ in range(4):
+                    v=random.randint(0,n-1)
+                    if v!=u:
+                        adj[u].append((v, random.randint(1,64)))
+            return adj,0,n-1,'MixedCycleHybrid'
+
+        graphs=[dense_random_80(), two_cluster_bridge(), heavy_fanout_layered(), mixed_cycle_hybrid()]
+
+        results=[]
+        for adj, src, dst, tag in graphs:
+            # Dijkstra timing
+            t0=time.perf_counter(); path_d,cost_d=dijkstra(adj, src, dst); td=time.perf_counter()-t0
+            # Direct Loihi timing
+            t1=time.perf_counter(); adj_proc=preprocess_fanout_constraint(adj); lg=LoihiGraphSearch(adj_proc, source=src, destination=dst); path_l,_,_steps=lg.run(max_steps=10000); tl=time.perf_counter()-t1
+            # Collapse aux for cost
+            if path_l:
+                max_orig=max(adj.keys())
+                path_l_clean=[n for n in path_l if n<=max_orig]
+                cost_l=0
+                for u,v in zip(path_l_clean[:-1], path_l_clean[1:]):
+                    ec=next((c for dst2,c in adj.get(u,[]) if dst2==v), None)
+                    if ec is None: cost_l=float('inf'); break
+                    cost_l+=ec
+            else:
+                cost_l=float('inf')
+            # Fugu timing
+            t2=time.perf_counter(); brick=LoihiGSBrick(adj, source=src, destination=dst, name=f'MergedPerf_{tag}'); scaffold=Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); backend=gsearch_Backend(); backend.compile(scaffold,{}); res=backend.run(n_steps=10000); tf=time.perf_counter()-t2
+            fpath=res['path']; neuron_to_node={v:k for k,v in brick.node_to_neuron.items()}; raw_nodes=[neuron_to_node.get(n,n) for n in fpath if n in neuron_to_node]; # simple normalization
+            collapsed=[]
+            for n in raw_nodes:
+                base = n.split('__aux__')[0] if isinstance(n,str) and '__aux__' in n else n
+                try:
+                    base_i=int(base)
+                except (ValueError,TypeError):
+                    base_i=base
+                if not collapsed or collapsed[-1]!=base_i:
+                    collapsed.append(base_i)
+            cost_f=0 if len(collapsed)>1 else (0 if (len(collapsed)==1 and collapsed[0]==src==dst) else float('inf'))
+            if len(collapsed)>1:
+                for u,v in zip(collapsed[:-1], collapsed[1:]):
+                    ec=next((c for dst2,c in adj.get(u,[]) if dst2==v), None)
+                    if ec is None: cost_f=float('inf'); break
+                    cost_f+=ec
+            # Assertions
+            self.assertEqual(cost_d, cost_l, f"Direct Loihi cost mismatch on {tag}: Dijkstra={cost_d} Loihi={cost_l}")
+            self.assertEqual(cost_d, cost_f, f"Fugu cost mismatch on {tag}: Dijkstra={cost_d} Fugu={cost_f}")
+            results.append((tag, cost_d, td, tl, tf))
+
+        # Simple performance sanity: algorithms should produce same cost; print summary
+        print("\nPerformance Summary (tag, cost, t_dijkstra, t_loihi_direct, t_fugu):")
+        for r in results:
+            print(f"  {r[0]}: cost={r[1]} dijk={r[2]:.4f}s loihi={r[3]:.4f}s fugu={r[4]:.4f}s")
 
 
 if __name__ == '__main__':
