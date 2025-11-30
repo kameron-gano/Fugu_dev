@@ -16,6 +16,21 @@ class gsearch_Backend(snn_Backend):
 	"""
 	def compile(self, scaffold, compile_args):
 		super().compile(scaffold, compile_args)
+		
+		# Store original backward edge weights for readout logic
+		bundle = self.fugu_graph.graph.get('loihi_gs', {})
+		if 'w_backward_original' not in bundle:
+			w_backward_original = {}
+			for u, v, data in self.fugu_graph.edges(data=True):
+				if data.get('direction') == 'backward':
+					# Edge (u, v) is a backward edge, store with key (u, v)
+					w_backward_original[(u, v)] = data.get('weight', 0)
+			bundle['w_backward_original'] = w_backward_original
+			self.fugu_graph.graph['loihi_gs'] = bundle
+		
+		# Initialize spike_time tracking for all neurons (when they first spiked)
+		self.spike_time = {name: -1 for name in self.fugu_graph.nodes()}
+		self.current_timestep = 0
 	
 	def remaining_backward_edges(self) -> list[tuple[str, str]]:
 		"""List (post, pre) neuron-name pairs for backward synapses with weight>0.
@@ -41,13 +56,18 @@ class gsearch_Backend(snn_Backend):
 		Returns:
 			True if mutated, False otherwise.
 		"""
-		if not self.fugu_graph.has_edge(post, pre):
+		# Backward edge in graph goes FROM pre TO post
+		if not self.fugu_graph.has_edge(pre, post):
+			print(f"DEBUG zero_backward_edge: Edge ({pre}, {post}) not in graph")
 			return False
-		data = self.fugu_graph[post][pre]
+		data = self.fugu_graph[pre][post]
 		if data.get('direction') != 'backward':
+			print(f"DEBUG zero_backward_edge: Edge ({pre}, {post}) is not backward (direction={data.get('direction')})")
 			return False
 		if data.get('weight', 0) == 0:
+			print(f"DEBUG zero_backward_edge: Edge ({pre}, {post}) already zeroed")
 			return False  # already zeroed
+		print(f"DEBUG zero_backward_edge: Zeroing edge ({pre}, {post}), weight {data.get('weight')} -> 0.0")
 		data['weight'] = 0.0
 		bundle = self.fugu_graph.graph.get('loihi_gs', {})
 		adj = bundle.get('adj_backward')
@@ -65,20 +85,24 @@ class gsearch_Backend(snn_Backend):
 		Returns:
 			count of edges successfully zeroed.
 		"""
+		print(f"DEBUG zero_backward_edges: Called with {len(edges)} edges")
 		count = 0
 		for post, pre in edges:
+			print(f"DEBUG zero_backward_edges: Trying to zero edge post={post}, pre={pre}")
 			if self.zero_backward_edge(post, pre):
 				count += 1
+		print(f"DEBUG zero_backward_edges: Zeroed {count} edges")
 		return count
 	
 	def readout_next_hop(self):
-		"""Return a deterministic next forward hop from a given current neuron.
+		"""Return next hop by checking which BACKWARD edge was pruned.
 
-		After pruning, each path node should have at most one remaining forward
-		edge (direction=='forward', weight>0). To keep backward compatibility with
-		the placeholder signature, this method inspects an attribute
-		`current_hop` on the backend; callers can set `self.current_hop` before
-		invocation. If `current_hop` isn't set, it returns None.
+		Algorithm from standalone implementation (Lines 14-20):
+		For current node i, find node j such that:
+		1. There's a forward edge i→j (direction='forward', weight=1)
+		2. The backward edge j→i was PRUNED (originally had weight>0, now weight=0)
+
+		This method inspects `self.current_hop` to determine current node.
 
 		Returns:
 		    The next neuron name (str) or None if no valid hop.
@@ -86,15 +110,25 @@ class gsearch_Backend(snn_Backend):
 		current = getattr(self, 'current_hop', None)
 		if current is None or current not in self.fugu_graph:
 			return None
-		candidates = []
+		
+		# Get bundle to access original backward edge weights
+		bundle = self.fugu_graph.graph.get('loihi_gs', {})
+		w_backward_original = bundle.get('w_backward_original', {})
+		
+		# Look for forward edges from current
 		for _, nxt, data in self.fugu_graph.out_edges(current, data=True):
-			if data.get('direction') == 'forward' and data.get('weight', 0) > 0:
-				candidates.append(nxt)
-		if not candidates:
-			return None
-		# Deterministic selection: pick lowest index (ties arbitrary but stable)
-		candidates.sort(key=lambda n: self.fugu_graph.nodes[n].get('index', 1e9))
-		return candidates[0]
+			if data.get('direction') == 'forward' and data.get('weight', 0) == 1.0:
+				# Check if backward edge nxt→current was pruned
+				backward_key = (nxt, current)
+				if backward_key in w_backward_original:
+					original_weight = w_backward_original[backward_key]
+					if original_weight > 0:
+						# Check if this backward edge is now zeroed
+						if self.fugu_graph.has_edge(nxt, current):
+							current_weight = self.fugu_graph[nxt][current].get('weight', 0)
+							if current_weight == 0:
+								return nxt
+		return None
 
 	def reconstruct_path(self) -> list[str]:
 		"""
@@ -132,25 +166,59 @@ class gsearch_Backend(snn_Backend):
 
 
 	def prune_step(self) -> dict[str, Any]:
-		"""Perform one graph-search pruning step.
+		"""Perform one graph-search pruning step (Lines 7-12 of algorithm).
 
-		Detect backward edges whose post neuron spiked this timestep and zero them.
+		For each neuron i that JUST spiked at t+1:
+		  For each fanin j with backward edge j→i:
+		    If j spiked at EXACTLY t - d_{j,i}, prune edge j→i
+		
 		Returns diagnostics: {'zeroed': int, 'remaining': int, 'source_spiked': bool}.
-		Requires that neuron spike history/state be accessible via self.nn.
 		"""
-		# Build a quick set of spiking neuron names this timestep.
-		spiking = {n.name for n in self.nn.nrns.values() if getattr(n, 'spike', False)}
+		# Get neurons that spiked THIS timestep
+		newly_spiked = set()
+		for name, neuron in self.nn.nrns.items():
+			spike_val = getattr(neuron, 'spike', False)
+			if spike_val:
+				print(f"DEBUG prune_step: Neuron {name} has spike={spike_val}, spike_time={self.spike_time.get(name, 'MISSING')}")
+				# Record first spike time
+				if self.spike_time[name] == -1:
+					self.spike_time[name] = self.current_timestep
+					newly_spiked.add(name)
+					print(f"DEBUG prune_step: Added {name} to newly_spiked (first spike at t={self.current_timestep})")
+				else:
+					print(f"DEBUG prune_step: Neuron {name} already spiked at t={self.spike_time[name]}, not adding to newly_spiked")
+		
 		fired_backward: list[tuple[str, str]] = []
-		for post, pre, data in self.fugu_graph.edges(data=True):
-			if data.get('direction') == 'backward' and data.get('weight', 0) != 0:
-				# backward synapse post->pre fired if post spiked
-				if post in spiking:
-					fired_backward.append((post, pre))
+		
+		# For each neuron i that just spiked
+		for post in newly_spiked:
+			print(f"DEBUG prune_step: Checking neuron {post}")
+			# Check all backward edges coming INTO post (fanin from wavefront direction)
+			# Brick creates: graph.add_edge(v, u, direction='backward') for original edge u→v
+			# This represents wavefront edge v→u (backward direction)
+			# When u spikes, check if v contributed (v→u with delay c)
+			for pre, _, data in self.fugu_graph.in_edges(post, data=True):
+				print(f"DEBUG prune_step:   In-edge ({pre}, {post}), direction={data.get('direction')}")
+				if data.get('direction') == 'backward':
+					# Get delay for this edge  
+					delay = int(data.get('delay', 1))
+					# Fugu neurons spike 1 timestep later than standalone due to LIF dynamics
+					# Map Fugu time to standalone time: standalone_t = fugu_t - 1
+					# Then check: spike_time[pre] == standalone_t - delay
+					# Which is: spike_time[pre] == (fugu_t - 1) - delay
+					expected_spike_time = self.current_timestep - delay - 1
+					pre_spike_time = self.spike_time.get(pre, -1)
+					print(f"DEBUG prune_step:     delay={delay}, expected={expected_spike_time}, actual={pre_spike_time}")
+					if pre_spike_time == expected_spike_time:
+						print(f"DEBUG prune_step:     MATCH! Appending ({post}, {pre})")
+						# Edge in graph is (pre, post), append as (post, pre) for zero_backward_edges
+						fired_backward.append((post, pre))
+		
 		zeroed = self.zero_backward_edges(fired_backward)
 		remaining = len(self.remaining_backward_edges())
 		bundle = self.fugu_graph.graph.get('loihi_gs') or {}
 		src = bundle.get('source_neuron')
-		source_spiked = src in spiking if src else False
+		source_spiked = src in newly_spiked if src else False
 		return {'zeroed': zeroed, 'remaining': remaining, 'source_spiked': source_spiked}
 
 	def run(self, n_steps: Optional[int] = None):
@@ -183,25 +251,36 @@ class gsearch_Backend(snn_Backend):
 		if dst not in self.nn.nrns or src not in self.nn.nrns:
 			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
 
-		# # Prime initial destination spike (time 0)
-		# dest_neuron = self.nn.nrns[dst]
-		# dest_neuron.spike = True
-		# dest_neuron.spike_hist.append(True)
+		# Prime initial destination spike (time 0) - needed to start wavefront
+		dest_neuron = self.nn.nrns[dst]
+		dest_neuron.spike = True
+		dest_neuron.spike_hist.append(True)
 
 		limit = int(n_steps) if n_steps is not None else max(10, 10 * len(self.fugu_graph.nodes))
-		steps = 0
-		source_spiked = self.nn.nrns[src].spike
-		last_diag = {'zeroed': 0, 'remaining': len(self.remaining_backward_edges()), 'source_spiked': source_spiked}
-		while not source_spiked and steps < limit:
+		
+		# Initialize: destination spikes at t=0 (Line 21)
+		# Mark destination as having spiked at t=0
+		self.current_timestep = 0
+		self.spike_time[dst] = 0
+		source_spiked = False
+		
+		# Lines 22-25: Run until source spikes (starting from t=1)
+		while not source_spiked and self.current_timestep < limit:
+			self.current_timestep += 1
 			self.nn.step()
 			last_diag = self.prune_step()
-			steps += 1
-			source_spiked = last_diag.get('source_spiked', False) or self.nn.nrns[src].spike
+			source_spiked = last_diag.get('source_spiked', False)
+		
+		# Line 26: One extra wavefront step after source spikes
+		if source_spiked and self.current_timestep < limit:
+			self.current_timestep += 1
+			self.nn.step()
+			self.prune_step()
 
 		path = self.reconstruct_path() if source_spiked else []
 		return {
 			'path': path,
-			'steps': steps,
+			'steps': self.current_timestep,
 			'source_spiked': source_spiked,
 			'remaining_backward': len(self.remaining_backward_edges())
 		}

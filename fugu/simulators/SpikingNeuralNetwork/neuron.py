@@ -19,6 +19,30 @@ else:
 from .compartments import Dendrite, COMPARTMENT_REGISTRY
 
 
+# Lambda registry for custom spike threshold criteria
+SPIKE_THRESH_LAMBDA_REGISTRY = {}
+
+def register_spike_thresh_lambda(name: str, lambda_fn: Callable[[float, float], bool]):
+    """Register a custom spike threshold lambda function.
+    
+    Args:
+        name: Registry key for this lambda
+        lambda_fn: Function taking (v_new, v_prev) and returning bool for spike decision
+    """
+    SPIKE_THRESH_LAMBDA_REGISTRY[name] = lambda_fn
+
+def get_spike_thresh_lambda(name: str) -> Optional[Callable[[float, float], bool]]:
+    """Retrieve a registered spike threshold lambda by name."""
+    return SPIKE_THRESH_LAMBDA_REGISTRY.get(name)
+
+
+# Register Loihi graph search spike criterion: v[t+1] >= 1 AND v[t] < 1
+register_spike_thresh_lambda(
+    'loihi_graph_search',
+    lambda v_new, v_prev: v_new >= 1.0 and v_prev < 1.0
+)
+
+
 class Neuron(ABC):
     """
     Abstract Base Class for Neurons. This class defines the minimum set of
@@ -401,7 +425,7 @@ class GeneralNeuron(LIFNeuron):
         p=1.0,
         record=False,
         compartment=None,
-        spike_thresh_lambda: Callable[[float], bool] = None,
+        spike_thresh_lambda: Callable[[float, float], bool] | str = None,
     ):
         """
         Mirrors ``LIFNeuron`` signature and adds an optional ``compartment`` field.
@@ -413,6 +437,10 @@ class GeneralNeuron(LIFNeuron):
                   'name' is optional and defaults to 'RecurrentInhibition'.
                   Remaining keys are passed as kwargs to the compartment ctor and
                   must match parameter names exactly.
+            spike_thresh_lambda (Callable | str | None):
+                - None: use default threshold crossing (v > T)
+                - str: lookup key in SPIKE_THRESH_LAMBDA_REGISTRY
+                - Callable: custom lambda(v_new, v_prev) -> bool
         """
         super(GeneralNeuron, self).__init__(
             name=name,
@@ -453,20 +481,30 @@ class GeneralNeuron(LIFNeuron):
         # Expose observables for diagnostics
         self.soma_current = 0.0
         self.lateral_inhibition = 0.0
-        # Store optional spike threshold lambda for soma decisions
-        self.spike_thresh_lambda = spike_thresh_lambda
+        
+        # Store spike threshold lambda - resolve string keys to functions
+        if isinstance(spike_thresh_lambda, str):
+            resolved = get_spike_thresh_lambda(spike_thresh_lambda)
+            if resolved is None:
+                raise ValueError(f"Unknown spike_thresh_lambda key: '{spike_thresh_lambda}'")
+            self.spike_thresh_lambda = resolved
+        else:
+            self.spike_thresh_lambda = spike_thresh_lambda
+        
+        # Track previous voltage for lambdas that need it
+        # Initialize to 0.0 to allow threshold crossing on first step
+        self.v_prev = 0.0
 
     def _soma_spike_decision(self, voltage: float) -> bool:
         """Decide whether the soma should spike at current voltage.
 
         Uses the user-supplied ``spike_thresh_lambda`` if provided, otherwise
-        defaults to ``voltage > self._T``. Any exception from the lambda
-        falls back to the default behaviour.
+        defaults to ``voltage > self._T``. Lambda receives (v_new, v_prev).
         """
         if self.spike_thresh_lambda is None:
             return voltage > self._T
         try:
-            return bool(self.spike_thresh_lambda(voltage))
+            return bool(self.spike_thresh_lambda(voltage, self.v_prev))
         except Exception:
             return voltage > self._T
 
@@ -477,8 +515,19 @@ class GeneralNeuron(LIFNeuron):
         method with a callback to perform the LIF update under temporary
         overrides. This makes interaction fully customizable by the compartment.
         """
+        # DO NOT update v_prev here - it needs to hold the value from BEFORE this step
+        # The lambda will use the current self.v_prev (from previous step) and the new voltage
+        
         if self.compartment is None:
-            super(GeneralNeuron, self).update_state(spike_thresh_lambda=self.spike_thresh_lambda)
+            # Wrap the 2-arg spike_thresh_lambda in a 1-arg adapter for LIFNeuron.update_state
+            if self.spike_thresh_lambda is not None:
+                adapter = lambda v_new: self._soma_spike_decision(v_new)
+                super(GeneralNeuron, self).update_state(spike_thresh_lambda=adapter)
+            else:
+                super(GeneralNeuron, self).update_state(spike_thresh_lambda=None)
+            
+            # NOW update v_prev for the next iteration (after spike decision is made)
+            self.v_prev = self.v
             return
 
         # Define a helper that runs one LIF step under temporary overrides

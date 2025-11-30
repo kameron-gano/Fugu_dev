@@ -209,18 +209,21 @@ class LoihiGSBrick(Brick):
             if neuron_name == self.node_to_neuron.get(self.destination):
                 graph.add_node(neuron_name,
                     index=idx,
-                    threshold=0.9,
+                    threshold=1.0,
                     decay=0,
                     p=1.0,
-                    potential=1.0)
+                    potential=1.0,
+                    neuron_type='GeneralNeuron',
+                    spike_thresh_lambda='loihi_graph_search')
             else:
-            # default neuron properties (consistent with other bricks)
                 graph.add_node(neuron_name,
                             index=idx,
-                            threshold=0.9,
+                            threshold=1.0,
                             decay=0,
                             p=1.0,
-                            potential=0.0)
+                            potential=0.0,
+                            neuron_type='GeneralNeuron',
+                            spike_thresh_lambda='loihi_graph_search')
 
         # Mark source/destination if provided
         if self.source is not None and self.source in self.node_to_neuron:

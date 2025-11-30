@@ -54,6 +54,7 @@ class snn_Backend(Backend):
 
                 compartment = props.get('compartment', None)
                 leakage_constant = props.get('leakage_constant', Vretain)
+                spike_thresh_lambda = props.get('spike_thresh_lambda', None)
                 n = GeneralNeuron(
                     name=neuron,
                     voltage=Vinit,
@@ -64,6 +65,7 @@ class snn_Backend(Backend):
                     p=P,
                     record=recordAll,
                     compartment=compartment,
+                    spike_thresh_lambda=spike_thresh_lambda,
                 )
             else:
                 # Default to LIFNeuron
