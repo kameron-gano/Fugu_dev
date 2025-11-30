@@ -12,11 +12,15 @@ and may require further backend tuning for specific edge cases.
 """
 
 import unittest
+import os
 from typing import Dict, List, Tuple
 
 from fugu import Scaffold
 from fugu.bricks import LoihiGSBrick
 from fugu.backends import gsearch_Backend
+from loihi_graph_search import LoihiGraphSearch, preprocess_fanout_constraint
+import networkx as nx
+import pytest
 
 
 def dijkstra(adj: Dict[int, List[Tuple[int, int]]], source: int, destination: int) -> Tuple[List[int], int]:
@@ -190,12 +194,47 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
         # Run Fugu brick
         path_fugu, cost_fugu, steps_fugu = self.run_fugu_brick(adj, source, dest, test_name)
         print(f"Fugu: path={path_fugu}, cost={cost_fugu}, steps={steps_fugu}")
+
+        # Run direct LoihiGraphSearch (preprocess for fanout constraint)
+        loihi_path_proc = []
+        loihi_cost = float('inf')
+        loihi_steps = -1
+        do_loihi_compare = len(adj) <= 30  # skip very large stress tests for runtime
+        if do_loihi_compare:
+            adj_proc = preprocess_fanout_constraint(adj)
+            lg = LoihiGraphSearch(adj_proc, source=source, destination=dest)
+            path_loihi_raw, _, steps = lg.run(max_steps=5000)
+            loihi_steps = steps
+            if path_loihi_raw:
+                # Collapse auxiliary nodes (IDs > max original id)
+                max_orig = max(adj.keys())
+                loihi_path_proc = [n for n in path_loihi_raw if n <= max_orig]
+                # Compute cost over original adjacency
+                if len(loihi_path_proc) > 1:
+                    cost_tmp = 0
+                    for u, v in zip(loihi_path_proc[:-1], loihi_path_proc[1:]):
+                        if u == v:
+                            continue
+                        ec = next((c for dst, c in adj.get(u, []) if dst == v), None)
+                        if ec is None:
+                            cost_tmp = float('inf')
+                            break
+                        cost_tmp += ec
+                    loihi_cost = cost_tmp
+                elif len(loihi_path_proc) == 1 and source == dest:
+                    loihi_cost = 0
+            print(f"LoihiDirect: path={loihi_path_proc}, cost={loihi_cost}, steps={loihi_steps}")
+        else:
+            print("LoihiDirect: skipped (graph size > 30)")
         
         # Validate
         self.assertEqual(path_fugu[0], source, "Fugu path must start at source")
         self.assertEqual(path_fugu[-1], dest, "Fugu path must end at destination")
         self.assertEqual(cost_fugu, cost_dijk, 
                         f"Costs differ: Fugu={cost_fugu}, Dijkstra={cost_dijk}")
+        if do_loihi_compare and loihi_path_proc:
+            self.assertEqual(cost_fugu, loihi_cost,
+                             f"Costs differ vs direct Loihi: Fugu={cost_fugu}, LoihiDirect={loihi_cost}")
         
         print(f"✓ PASS: Fugu matches Dijkstra, cost={cost_dijk}")
     
@@ -444,6 +483,229 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
         adj = {i: [(j, cost_fn(i, j)) for j in range(n) if j != i] for i in range(n)}
         # Source=0, Destination=n-1
         self.compare_with_dijkstra(adj, 0, n - 1, "Huge Fully Connected K100")
+
+    # ================== Construction / Transformation Tests (merged) ==================
+
+    def test_construction_preprocessing_mapping_basic(self):
+        """Merged: test_loihi_gs_preprocessing_and_mapping basic auxiliary creation."""
+        adj = {
+            'A': [('B', 3), ('C', 1)],
+            'B': [('C', 2)],
+            'C': []
+        }
+        brick = LoihiGSBrick(adj, name='MergedBasic')
+        G = nx.DiGraph()
+        brick.build(G, None, None, None, None)
+        neuron_A = brick.node_to_neuron['A']
+        neuron_B = brick.node_to_neuron['B']
+        neuron_C = brick.node_to_neuron['C']
+        aux_nodes = [k for k in brick.node_to_neuron.keys() if isinstance(k, str) and k.startswith('A__aux__')]
+        self.assertEqual(len(aux_nodes), 1)
+        aux = aux_nodes[0]
+        neuron_aux = brick.node_to_neuron[aux]
+        self.assertTrue(G.has_edge(neuron_A, neuron_aux))
+        self.assertEqual(G[neuron_A][neuron_aux]['delay'], 1)
+        self.assertTrue(G.has_edge(neuron_aux, neuron_B))
+        self.assertEqual(G[neuron_aux][neuron_B]['delay'], 1)
+        self.assertTrue(G.has_edge(neuron_B, neuron_aux))
+        self.assertEqual(G[neuron_B][neuron_aux]['delay'], 2)
+        self.assertTrue(G.has_edge(neuron_A, neuron_C))
+        self.assertEqual(G[neuron_A][neuron_C]['delay'], 1)
+        self.assertTrue(G.has_edge(neuron_C, neuron_A))
+        self.assertEqual(G[neuron_C][neuron_A]['delay'], 1)
+
+    def test_construction_adjacency_matrix(self):
+        mat = [
+            [0, 2, 0],
+            [0, 0, 1],
+            [0, 0, 0],
+        ]
+        brick = LoihiGSBrick(mat, name='MergedMatrix')
+        G = nx.DiGraph()
+        brick.build(G, None, None, None, None)
+        n0 = brick.node_to_neuron[0]
+        n1 = brick.node_to_neuron[1]
+        n2 = brick.node_to_neuron[2]
+        self.assertEqual(G[n0][n1]['delay'], 1)
+        self.assertEqual(G[n1][n2]['delay'], 1)
+        self.assertEqual(G[n1][n0]['delay'], 2)
+        self.assertEqual(G[n2][n1]['delay'], 1)
+
+    def test_construction_float_cost_quantize(self):
+        adj = {'A': [('B', 2.7)], 'B': []}
+        brick = LoihiGSBrick(adj, name='MergedFloat', require_integer_costs=False)
+        G = nx.DiGraph()
+        brick.build(G, None, None, None, None)
+        nA = brick.node_to_neuron['A']
+        nB = brick.node_to_neuron['B']
+        self.assertEqual(G[nA][nB]['delay'], 1)
+        self.assertEqual(G[nB][nA]['delay'], 3)
+
+    def test_construction_disconnected_raises(self):
+        adj = {'A': [('B', 1)], 'C': [('D', 1)], 'B': [], 'D': []}
+        brick = LoihiGSBrick(adj, name='MergedDisconn')
+        G = nx.DiGraph()
+        with self.assertRaises(ValueError):
+            brick.build(G, None, None, None, None)
+
+    def test_construction_branching_aux_nodes(self):
+        adj = {'P': [('A', 1), ('B', 4), ('C', 3)], 'A': [], 'B': [], 'C': []}
+        brick = LoihiGSBrick(adj, name='MergedBranch')
+        G = nx.DiGraph()
+        brick.build(G, None, None, None, None)
+        aux_keys = [k for k in brick.node_to_neuron.keys() if isinstance(k, str) and k.startswith('P__aux__')]
+        self.assertEqual(len(aux_keys), 2)
+
+    # Transformation / fanout tests (selected core assertions)
+    def test_transformation_single_edge(self):
+        adj = {0: [(1, 5)], 1: []}
+        brick = LoihiGSBrick(adj, source=0, destination=1, name='MergedSingle')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks()
+        graph = scaffold.graph
+        n0 = brick.node_to_neuron[0]; n1 = brick.node_to_neuron[1]
+        self.assertEqual(graph[n0][n1]['delay'], 1)
+        self.assertEqual(graph[n1][n0]['delay'], 5)
+
+    def test_transformation_cycle_weakly_connected(self):
+        adj = {0: [(1, 2)], 1: [(2, 3)], 2: [(0, 1)]}
+        brick = LoihiGSBrick(adj, source=0, destination=2, name='MergedCycle')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks()
+        self.assertGreater(len(scaffold.graph.nodes), 0)
+
+    def test_transformation_all_cost_one_no_aux(self):
+        adj = {0: [(1,1),(2,1),(3,1)],1:[(4,1)],2:[(4,1)],3:[(4,1)],4:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=4, name='MergedAllOnes')
+        nodes, edges = brick._parse_input(); proc_nodes, proc_edges = brick._preprocess_fanout(nodes, edges)
+        aux_nodes = [n for n in proc_nodes if '__aux__' in str(n)]
+        self.assertEqual(len(aux_nodes), 0)
+        self.assertEqual(len(proc_nodes), len(nodes))
+
+    def test_transformation_high_fanout_aux_created(self):
+        adj = {0: [(i, i+1) for i in range(1,8)], **{i: [] for i in range(1,8)}}
+        brick = LoihiGSBrick(adj, source=0, destination=7, name='MergedHighFanout')
+        nodes, edges = brick._parse_input(); proc_nodes, proc_edges = brick._preprocess_fanout(nodes, edges)
+        aux_nodes = [n for n in proc_nodes if '__aux__' in str(n)]
+        self.assertEqual(len(aux_nodes), 7)
+        fanout_map = {}
+        for u,v,c in proc_edges:
+            fanout_map.setdefault(u, []).append((v,c))
+        costs = [c for v,c in fanout_map[0]]
+        self.assertTrue(all(c==1 for c in costs))
+
+    def test_transformation_chain_preservation(self):
+        adj = {0:[(1,5)],1:[(2,3)],2:[(3,7)],3:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=3, name='MergedChain')
+        nodes, edges = brick._parse_input(); proc_nodes, proc_edges = brick._preprocess_fanout(nodes, edges)
+        self.assertEqual(len([n for n in proc_nodes if '__aux__' in str(n)]), 0)
+        self.assertEqual(len(proc_edges), len(edges))
+
+    def test_transformation_backward_delay_encoding(self):
+        adj = {0:[(1,7)],1:[(2,13)],2:[(3,23)],3:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=3, name='MergedDelays')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); graph = scaffold.graph
+        n0 = brick.node_to_neuron[0]; n1 = brick.node_to_neuron[1]; n2 = brick.node_to_neuron[2]; n3 = brick.node_to_neuron[3]
+        self.assertEqual(graph[n1][n0]['delay'], 7)
+        self.assertEqual(graph[n2][n1]['delay'], 13)
+        self.assertEqual(graph[n3][n2]['delay'], 23)
+
+    def test_transformation_forward_delay_fixed(self):
+        adj = {0:[(1,10),(2,20)],1:[(3,30)],2:[(3,40)],3:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=3, name='MergedForward')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); graph = scaffold.graph
+        for u,v,d in graph.edges(data=True):
+            if d.get('direction')=='forward':
+                self.assertEqual(d.get('delay'),1)
+
+    def test_transformation_source_destination_metadata(self):
+        adj = {0:[(1,2)],1:[(2,3)],2:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=2, name='MergedMeta')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); graph = scaffold.graph
+        bundle = graph.graph['loihi_gs']
+        self.assertEqual(bundle['source'],0); self.assertEqual(bundle['destination'],2)
+        src = bundle['source_neuron']; dst = bundle['destination_neuron']
+        self.assertTrue(graph.nodes[src].get('is_source'))
+        self.assertTrue(graph.nodes[dst].get('is_destination'))
+
+    def test_transformation_neuron_properties(self):
+        adj = {0:[(1,5)],1:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=1, name='MergedNeuronProps')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); graph = scaffold.graph
+        dst_neuron = graph.graph['loihi_gs']['destination_neuron']
+        for node,data in graph.nodes(data=True):
+            for key in ['threshold','decay','p','potential','index']:
+                self.assertIn(key,data)
+            self.assertEqual(data['threshold'],0.9)
+            self.assertEqual(data['decay'],0)
+            self.assertEqual(data['p'],1.0)
+            if node==dst_neuron:
+                self.assertEqual(data['potential'],1.0)
+            else:
+                self.assertEqual(data['potential'],0.0)
+
+    def test_transformation_large_costs(self):
+        adj = {0:[(1,64),(2,32)],1:[(3,63)],2:[(3,1)],3:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=3, name='MergedLargeCosts')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); graph = scaffold.graph
+        max_delay = 0
+        for u,v,d in graph.edges(data=True):
+            if d.get('direction')=='backward':
+                max_delay = max(max_delay, d.get('delay'))
+        # cost 64 split into 1 + 63 so max backward delay 63
+        self.assertEqual(max_delay,63)
+
+    def test_transformation_aux_naming_uniqueness(self):
+        adj = {0:[(1,5),(2,3)],1:[(2,4)],2:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=2, name='MergedNaming')
+        nodes, edges = brick._parse_input(); proc_nodes, _ = brick._preprocess_fanout(nodes, edges)
+        self.assertEqual(len(proc_nodes), len(set(proc_nodes)))
+
+    def test_transformation_complete_small(self):
+        adj = {0:[(1,2),(2,3),(3,4)],1:[(0,2),(2,5),(3,6)],2:[(0,3),(1,5),(3,7)],3:[(0,4),(1,6),(2,7)]}
+        brick = LoihiGSBrick(adj, source=0, destination=3, name='MergedComplete')
+        nodes, edges = brick._parse_input(); proc_nodes, proc_edges = brick._preprocess_fanout(nodes, edges)
+        # verify fanout constraint
+        fanout_map = {}
+        for u,v,c in proc_edges:
+            fanout_map.setdefault(u, []).append(c)
+        for u,costs in fanout_map.items():
+            if len(costs)>1:
+                self.assertTrue(all(x==1 for x in costs))
+
+    def test_transformation_integration_backend(self):
+        adj = {0:[(1,2),(2,5)],1:[(3,3)],2:[(3,1)],3:[]}
+        brick = LoihiGSBrick(adj, source=0, destination=3, name='MergedIntegration')
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); backend = gsearch_Backend(); backend.compile(scaffold,{})
+        self.assertEqual(backend.fugu_graph.graph['loihi_gs']['source'],0)
+        self.assertEqual(backend.fugu_graph.graph['loihi_gs']['destination'],3)
+
+    @pytest.mark.skipif(not os.getenv('FUGU_STRESS'), reason='Set FUGU_STRESS=1 to enable dense 50-node test')
+    def test_transformation_dense_graph_50_nodes(self):
+        import random, time
+        random.seed(42)
+        n_nodes = 50; density = 0.4
+        adj = {}
+        for i in range(n_nodes):
+            neighbors=[]
+            for j in range(i+1,n_nodes):
+                if random.random()<density:
+                    neighbors.append((j, random.randint(1,64)))
+            adj[i]=neighbors
+        brick = LoihiGSBrick(adj, source=0, destination=n_nodes-1, name='MergedDense50')
+        nodes, edges = brick._parse_input(); proc_nodes, proc_edges = brick._preprocess_fanout(nodes, edges)
+        fanout_map={}
+        for u,v,c in proc_edges:
+            fanout_map.setdefault(u, []).append(c)
+        for u,costs in fanout_map.items():
+            if len(costs)>1:
+                self.assertTrue(all(x==1 for x in costs))
+        scaffold = Scaffold(); scaffold.add_brick(brick, output=True); scaffold.lay_bricks(); graph = scaffold.graph
+        forward=0; backward=0
+        for u,v,d in graph.edges(data=True):
+            if d.get('direction')=='forward':
+                self.assertEqual(d.get('delay'),1); forward+=1
+            else:
+                backward+=1; self.assertGreaterEqual(d.get('delay'),1)
+        self.assertEqual(forward, backward)
 
 
 if __name__ == '__main__':
