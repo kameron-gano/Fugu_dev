@@ -103,9 +103,13 @@ def test_fanout_preprocessing():
         print(f"  Loihi backward delays: ({cost_0_aux}-1) + ({cost_aux_1}-1) = {cost_0_aux-1} + {cost_aux_1-1} = {cost_0_aux+cost_aux_1-2}")
         print(f"  Fugu delays (cost): {cost_0_aux} + {cost_aux_1} = {cost_0_aux + cost_aux_1}")
         
+        # With c-1 formula: 0->aux (cost 1) + aux->1 (cost 4)
+        # Total cost: 1 + 4 = 5 (original preserved)
+        # Loihi delays: (1-1) + (4-1) = 0 + 3 = 3
         total_loihi_delay = cost_0_aux + cost_aux_1 - 2
-        assert total_loihi_delay == 4, f"Expected total Loihi delay = 4, got {total_loihi_delay}"
-        print("  ✓ PASSED: Total delay preserved!")
+        assert total_loihi_delay == 3, f"Expected total Loihi delay = 3, got {total_loihi_delay}"
+        assert cost_0_aux + cost_aux_1 == 5, f"Expected total cost = 5, got {cost_0_aux + cost_aux_1}"
+        print("  ✓ PASSED: Total cost preserved!")
 
 def test_delay_mapping():
     """Test that delays are correctly mapped to Fugu graph."""
@@ -427,7 +431,8 @@ def test_large_costs():
             max_delay = max(max_delay, delay)
     
     print(f"Maximum backward delay in graph: {max_delay}")
-    assert max_delay == 64, f"Expected max delay=64, got {max_delay}"
+    # Cost 64 edge is split into 1 + 63, so max delay is 63
+    assert max_delay == 63, f"Expected max delay=63, got {max_delay}"
     
     print(f"\n✓ PASSED: Large costs handled correctly")
 

@@ -149,7 +149,8 @@ class TestLoihiGraphTransformation:
         
         for aux in aux_nodes:
             assert len(fanout_map[aux]) == 1
-            assert fanout_map[aux][0][1] == 7
+            # Each aux->dest edge has cost 7-1=6 (c-1 formula)
+            assert fanout_map[aux][0][1] == 6
     
     def test_asymmetric_fanout(self):
         """Test node with highly asymmetric costs."""

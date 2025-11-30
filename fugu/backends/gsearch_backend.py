@@ -32,67 +32,50 @@ class gsearch_Backend(snn_Backend):
 		self.spike_time = {name: -1 for name in self.fugu_graph.nodes()}
 		self.current_timestep = 0
 	
+	def zero_backward_edges(self, edges_to_zero: list[tuple[str, str]]) -> int:
+		"""Zero out backward edges in both the graph and the neural network.
+		
+		Args:
+		    edges_to_zero: List of (post, pre) tuples representing backward edges post←pre.
+		                   The graph stores this as edge (post, pre) with direction='backward'.
+		
+		Returns:
+		    Number of edges successfully zeroed.
+		"""
+		zeroed_count = 0
+		for post, pre in edges_to_zero:
+			# The graph stores backward edge post←pre as (post, pre) with direction='backward'
+			if self.fugu_graph.has_edge(post, pre):
+				edge_data = self.fugu_graph[post][pre]
+				if edge_data.get('direction') == 'backward' and edge_data.get('weight', 0) > 0:
+					# Zero the weight in the graph
+					edge_data['weight'] = 0.0
+					
+					# Also zero the synapse in the neural network simulator
+					# The synapse in nn is from post to pre
+					if hasattr(self, 'nn') and hasattr(self.nn, 'syns'):
+						syn_key = (post, pre)
+						if syn_key in self.nn.syns:
+							self.nn.syns[syn_key].wght = 0.0
+					
+					zeroed_count += 1
+					print(f"DEBUG zero_backward_edges: Zeroed edge ({post}, {pre})")
+		
+		return zeroed_count
+	
 	def remaining_backward_edges(self) -> list[tuple[str, str]]:
-		"""List (post, pre) neuron-name pairs for backward synapses with weight>0.
-
-		A backward synapse is one whose edge attribute ``direction == 'backward'``.
+		"""Return list of backward edges that still have non-zero weight.
+		
 		Returns:
-			list of (post, pre) pairs.
+		    List of (pre, post) tuples for backward edges with weight > 0.
 		"""
-		out: list[tuple[str, str]] = []
-		for post, pre, data in self.fugu_graph.edges(data=True):
-			if data.get('direction') == 'backward' and data.get('weight', 0) != 0:
-				out.append((post, pre))
-		return out
+		remaining = []
+		for u, v, data in self.fugu_graph.edges(data=True):
+			if data.get('direction') == 'backward' and data.get('weight', 0) > 0:
+				remaining.append((u, v))
+		return remaining
+	
 
-	def zero_backward_edge(self, post: str, pre: str) -> bool:
-		"""Set the weight of a backward edge (post->pre) to zero if present.
-
-		Also updates the cached adjacency matrix in ``graph.graph['loihi_gs']['adj_backward']``
-		if it exists. Safe no-op if edge missing or not backward.
-		Args:
-			post: post-synaptic neuron name (destination of backward edge)
-			pre:  pre-synaptic neuron name (source of backward edge)
-		Returns:
-			True if mutated, False otherwise.
-		"""
-		# Backward edge in graph goes FROM pre TO post
-		if not self.fugu_graph.has_edge(pre, post):
-			print(f"DEBUG zero_backward_edge: Edge ({pre}, {post}) not in graph")
-			return False
-		data = self.fugu_graph[pre][post]
-		if data.get('direction') != 'backward':
-			print(f"DEBUG zero_backward_edge: Edge ({pre}, {post}) is not backward (direction={data.get('direction')})")
-			return False
-		if data.get('weight', 0) == 0:
-			print(f"DEBUG zero_backward_edge: Edge ({pre}, {post}) already zeroed")
-			return False  # already zeroed
-		print(f"DEBUG zero_backward_edge: Zeroing edge ({pre}, {post}), weight {data.get('weight')} -> 0.0")
-		data['weight'] = 0.0
-		bundle = self.fugu_graph.graph.get('loihi_gs', {})
-		adj = bundle.get('adj_backward')
-		# update cached adjacency if present
-		if adj is not None:
-			i = self.fugu_graph.nodes[pre]['index']
-			j = self.fugu_graph.nodes[post]['index']
-			adj[j][i] = 0
-		return True
-
-	def zero_backward_edges(self, edges: list[tuple[str, str]]) -> int:
-		"""Batch zero multiple backward edges.
-		Args:
-			edges: iterable of (post, pre)
-		Returns:
-			count of edges successfully zeroed.
-		"""
-		print(f"DEBUG zero_backward_edges: Called with {len(edges)} edges")
-		count = 0
-		for post, pre in edges:
-			print(f"DEBUG zero_backward_edges: Trying to zero edge post={post}, pre={pre}")
-			if self.zero_backward_edge(post, pre):
-				count += 1
-		print(f"DEBUG zero_backward_edges: Zeroed {count} edges")
-		return count
 	
 	def readout_next_hop(self):
 		"""Return next hop by checking which BACKWARD edge was pruned.
@@ -179,40 +162,36 @@ class gsearch_Backend(snn_Backend):
 		for name, neuron in self.nn.nrns.items():
 			spike_val = getattr(neuron, 'spike', False)
 			if spike_val:
-				print(f"DEBUG prune_step: Neuron {name} has spike={spike_val}, spike_time={self.spike_time.get(name, 'MISSING')}")
 				# Record first spike time
 				if self.spike_time[name] == -1:
 					self.spike_time[name] = self.current_timestep
 					newly_spiked.add(name)
-					print(f"DEBUG prune_step: Added {name} to newly_spiked (first spike at t={self.current_timestep})")
-				else:
-					print(f"DEBUG prune_step: Neuron {name} already spiked at t={self.spike_time[name]}, not adding to newly_spiked")
+					print(f"t={self.current_timestep}: {name} SPIKED (first time)")
 		
 		fired_backward: list[tuple[str, str]] = []
 		
-		# For each neuron i that just spiked
-		for post in newly_spiked:
-			print(f"DEBUG prune_step: Checking neuron {post}")
-			# Check all backward edges coming INTO post (fanin from wavefront direction)
-			# Brick creates: graph.add_edge(v, u, direction='backward') for original edge u→v
-			# This represents wavefront edge v→u (backward direction)
-			# When u spikes, check if v contributed (v→u with delay c)
-			for pre, _, data in self.fugu_graph.in_edges(post, data=True):
-				print(f"DEBUG prune_step:   In-edge ({pre}, {post}), direction={data.get('direction')}")
-				if data.get('direction') == 'backward':
-					# Get delay for this edge  
-					delay = int(data.get('delay', 1))
-					# Fugu neurons spike 1 timestep later than standalone due to LIF dynamics
-					# Map Fugu time to standalone time: standalone_t = fugu_t - 1
-					# Then check: spike_time[pre] == standalone_t - delay
-					# Which is: spike_time[pre] == (fugu_t - 1) - delay
-					expected_spike_time = self.current_timestep - delay - 1
-					pre_spike_time = self.spike_time.get(pre, -1)
-					print(f"DEBUG prune_step:     delay={delay}, expected={expected_spike_time}, actual={pre_spike_time}")
-					if pre_spike_time == expected_spike_time:
-						print(f"DEBUG prune_step:     MATCH! Appending ({post}, {pre})")
-						# Edge in graph is (pre, post), append as (post, pre) for zero_backward_edges
-						fired_backward.append((post, pre))
+		# Correct trigger: when a predecessor ("pre") spikes, check its backward edges (post, pre)
+		# Because in this encoding post (closer to destination) spikes earlier, predecessor arrives later.
+		for pre in newly_spiked:
+			# Examine incoming backward edges (post, pre)
+			for post, _, data in self.fugu_graph.in_edges(pre, data=True):
+				if data.get('direction') != 'backward':
+					continue
+				# Delay encoded on backward edge (post, pre)
+				delay = int(data.get('delay', 1))
+				post_sim = self.spike_time.get(post, -1)
+				pre_sim  = self.spike_time.get(pre,  -1)
+				post_alg = post_sim - self.algo_offset if post_sim >= self.algo_offset else (-1 if post_sim < 0 else 0)
+				pre_alg  = pre_sim  - self.algo_offset if pre_sim  >= self.algo_offset else (-1 if pre_sim < 0 else 0)
+				# Prune condition: predecessor arrival consistent with earlier post spike
+				# post_alg should equal pre_alg - delay
+				should_prune = (post_alg >= 0 and pre_alg >= 0 and post_alg == pre_alg - delay)
+				print(
+					f"  EDGE ({post},{pre}) d={delay} post_sim={post_sim} pre_sim={pre_sim} post_alg={post_alg} pre_alg={pre_alg} expect_post_alg={pre_alg - delay} prune={should_prune}"
+				)
+				if should_prune:
+					print(f"    PRUNE: ({post},{pre}) ✓ (post_alg={post_alg} == pre_alg({pre_alg}) - d({delay}))")
+					fired_backward.append((post, pre))
 		
 		zeroed = self.zero_backward_edges(fired_backward)
 		remaining = len(self.remaining_backward_edges())
@@ -251,23 +230,29 @@ class gsearch_Backend(snn_Backend):
 		if dst not in self.nn.nrns or src not in self.nn.nrns:
 			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
 
-		# Prime initial destination spike (time 0) - needed to start wavefront
+		# Synthetic initial injection: set destination spike before first step
 		dest_neuron = self.nn.nrns[dst]
-		dest_neuron.spike = True
+		dest_neuron.spike = True  # Will be consumed by first nn.step()
 		dest_neuron.spike_hist.append(True)
 
 		limit = int(n_steps) if n_steps is not None else max(10, 10 * len(self.fugu_graph.nodes))
-		
-		# Initialize: destination spikes at t=0 (Line 21)
-		# Mark destination as having spiked at t=0
-		self.current_timestep = 0
-		self.spike_time[dst] = 0
+		self.current_timestep = 0  # simulator time
+		self.algo_offset = 1       # algorithm time = sim_time - 1 (after first step)
 		source_spiked = False
-		
-		# Lines 22-25: Run until source spikes (starting from t=1)
+
+		# Perform initial propagation step (algorithm time 0 happens after this)
+		self.current_timestep += 1
+		self.nn.step()
+		print(f"\n=== sim_t={self.current_timestep} (algo_t={self.current_timestep - self.algo_offset}): Initial propagation ===")
+		last_diag = self.prune_step()
+		source_spiked = last_diag.get('source_spiked', False)
+
+		# Main loop
 		while not source_spiked and self.current_timestep < limit:
 			self.current_timestep += 1
 			self.nn.step()
+			algo_t = self.current_timestep - self.algo_offset
+			print(f"\n=== sim_t={self.current_timestep} (algo_t={algo_t}) ===")
 			last_diag = self.prune_step()
 			source_spiked = last_diag.get('source_spiked', False)
 		
