@@ -59,7 +59,6 @@ class gsearch_Backend(snn_Backend):
 							self.nn.syns[syn_key].wght = 0.0
 					
 					zeroed_count += 1
-					print(f"DEBUG zero_backward_edges: Zeroed edge ({post}, {pre})")
 		
 		return zeroed_count
 	
@@ -162,11 +161,9 @@ class gsearch_Backend(snn_Backend):
 		for name, neuron in self.nn.nrns.items():
 			spike_val = getattr(neuron, 'spike', False)
 			if spike_val:
-				# Record first spike time
-				if self.spike_time[name] == -1:
+				if self.spike_time[name] == -1:  # first spike time
 					self.spike_time[name] = self.current_timestep
 					newly_spiked.add(name)
-					print(f"t={self.current_timestep}: {name} SPIKED (first time)")
 		
 		fired_backward: list[tuple[str, str]] = []
 		
@@ -186,11 +183,7 @@ class gsearch_Backend(snn_Backend):
 				# Prune condition: predecessor arrival consistent with earlier post spike
 				# post_alg should equal pre_alg - delay
 				should_prune = (post_alg >= 0 and pre_alg >= 0 and post_alg == pre_alg - delay)
-				print(
-					f"  EDGE ({post},{pre}) d={delay} post_sim={post_sim} pre_sim={pre_sim} post_alg={post_alg} pre_alg={pre_alg} expect_post_alg={pre_alg - delay} prune={should_prune}"
-				)
 				if should_prune:
-					print(f"    PRUNE: ({post},{pre}) ✓ (post_alg={post_alg} == pre_alg({pre_alg}) - d({delay}))")
 					fired_backward.append((post, pre))
 		
 		zeroed = self.zero_backward_edges(fired_backward)
@@ -243,7 +236,7 @@ class gsearch_Backend(snn_Backend):
 		# Perform initial propagation step (algorithm time 0 happens after this)
 		self.current_timestep += 1
 		self.nn.step()
-		print(f"\n=== sim_t={self.current_timestep} (algo_t={self.current_timestep - self.algo_offset}): Initial propagation ===")
+		# Initial propagation step (destination injection already applied)
 		last_diag = self.prune_step()
 		source_spiked = last_diag.get('source_spiked', False)
 
@@ -251,8 +244,6 @@ class gsearch_Backend(snn_Backend):
 		while not source_spiked and self.current_timestep < limit:
 			self.current_timestep += 1
 			self.nn.step()
-			algo_t = self.current_timestep - self.algo_offset
-			print(f"\n=== sim_t={self.current_timestep} (algo_t={algo_t}) ===")
 			last_diag = self.prune_step()
 			source_spiked = last_diag.get('source_spiked', False)
 		
