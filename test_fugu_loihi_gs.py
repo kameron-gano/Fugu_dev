@@ -152,14 +152,21 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
             for u, v in zip(path_original[:-1], path_original[1:]):
                 ec = next((c for dst2, c in adj.get(u, []) if dst2 == v), None)
                 if ec is None:
-                    recomputed = float('inf')
-                    break
+                    # Path contains an edge that doesn't exist in original graph
+                    raise AssertionError(
+                        f"Backend returned invalid path {path_original}: "
+                        f"edge ({u}, {v}) does not exist in original adjacency list"
+                    )
                 recomputed += ec
-            # Trust backend_cost; if mismatch, expose via printing (does not alter returned value)
+            # Verify backend cost matches recomputed cost from path edges
             if backend_cost != recomputed:
-                print(f"[WARN] Backend cost {backend_cost} != recomputed {recomputed} for path {path_original}")
+                raise AssertionError(
+                    f"Backend cost {backend_cost} != recomputed {recomputed} for path {path_original}"
+                )
         elif len(path_original) == 1 and source == dest and backend_cost != 0:
-            print(f"[WARN] Degenerate source==dest path cost mismatch: backend {backend_cost}")
+            raise AssertionError(
+                f"Degenerate source==dest path cost mismatch: backend={backend_cost}, expected=0"
+            )
 
         return path_original, backend_cost, result['steps']
     
