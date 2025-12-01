@@ -632,7 +632,8 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
             self.assertEqual(data['decay'],0)
             self.assertEqual(data['p'],1.0)
             if node==dst_neuron:
-                self.assertEqual(data['potential'],1.0)
+                # Destination starts at 1.5 (above threshold) to prevent re-spike after natural first spike
+                self.assertEqual(data['potential'],1.5)
             else:
                 self.assertEqual(data['potential'],0.0)
 

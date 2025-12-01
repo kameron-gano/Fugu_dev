@@ -215,7 +215,8 @@ class LoihiGSBrick(Brick):
                     threshold=0.9,
                     decay=0,
                     p=1.0,
-                    potential=1.0,
+                    potential=1.5,  # Start above reset voltage to prevent re-spike after injection
+                    reset_voltage=1.5,
                     neuron_type='GeneralNeuron',
                     spike_thresh_lambda='loihi_graph_search')
             else:
@@ -225,6 +226,7 @@ class LoihiGSBrick(Brick):
                             decay=0,
                             p=1.0,
                             potential=0.0,
+                            reset_voltage=1.5,
                             neuron_type='GeneralNeuron',
                             spike_thresh_lambda='loihi_graph_search')
 
@@ -240,9 +242,11 @@ class LoihiGSBrick(Brick):
                 raise ValueError(f"Edge cost must be >=1, got {c} for {u}->{v}")
             pre = self.node_to_neuron[u]
             post = self.node_to_neuron[v]
-            # forward synapse i -> j: weight=1, delay=1 (for readout, fixed)
-            graph.add_edge(pre, post, weight=1.0, delay=1, direction="forward")
-            # backward synapse j -> i: encodes cost in delay
+            # Forward synapse i -> j: weight=0 (structural only, no spike propagation during wavefront)
+            # These are used only for path reconstruction after pruning completes
+            graph.add_edge(pre, post, weight=0.0, delay=1, direction="forward")
+            # Backward synapse j -> i: weight=1, encodes cost in delay
+            # These propagate the wavefront from destination to source
             # Loihi algorithm: d_{j,i} = c_{i,j} - 1 (can be 0)
             # Fugu constraint: minimum delay = 1
             # Solution: set delay = c (equivalent to Loihi's c-1, shifted by +1)

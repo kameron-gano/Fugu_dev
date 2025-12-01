@@ -515,9 +515,6 @@ class GeneralNeuron(LIFNeuron):
         method with a callback to perform the LIF update under temporary
         overrides. This makes interaction fully customizable by the compartment.
         """
-        # DO NOT update v_prev here - it needs to hold the value from BEFORE this step
-        # The lambda will use the current self.v_prev (from previous step) and the new voltage
-        
         if self.compartment is None:
             # Wrap the 2-arg spike_thresh_lambda in a 1-arg adapter for LIFNeuron.update_state
             if self.spike_thresh_lambda is not None:
@@ -526,7 +523,9 @@ class GeneralNeuron(LIFNeuron):
             else:
                 super(GeneralNeuron, self).update_state(spike_thresh_lambda=None)
             
-            # NOW update v_prev for the next iteration (after spike decision is made)
+            # Update v_prev AFTER spike decision so it holds post-reset voltage
+            # This prevents re-spiking: if neuron spiked and reset to R > threshold,
+            # then v_prev > threshold on next step, so threshold-crossing lambda returns False
             self.v_prev = self.v
             return
 
