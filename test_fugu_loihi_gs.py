@@ -231,7 +231,7 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
             self.assertEqual(cost_fugu, loihi_cost,
                              f"Costs differ vs direct Loihi: Fugu={cost_fugu}, LoihiDirect={loihi_cost}")
         
-        print(f"✓ PASS: Fugu matches Dijkstra, cost={cost_dijk}")
+        print(f"PASS: Fugu matches Dijkstra, cost={cost_dijk}")
     
     # ========== Test Cases ==========
     
@@ -839,4 +839,4 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=3)

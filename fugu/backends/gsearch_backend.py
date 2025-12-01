@@ -134,18 +134,12 @@ class gsearch_Backend(snn_Backend):
 				# Check for forward edges (structural, weight doesn't matter)
 				if d.get('direction') != 'forward':
 					continue
-				# Check if backward edge v→u exists and has weight==0 (pruned)
+				# Check if backward edge v,u exists and has weight==0 (pruned)
 				if self.fugu_graph.has_edge(v, u):
 					bd = self.fugu_graph[v][u]
 					bw = bd.get('weight', 0)
 					if bd.get('direction') == 'backward' and bw == 0:
 						nbrs.append(v)
-						if self._gs_debug:
-							print(f"[READOUT] {u}→{v}: backward {v}→{u} pruned (w={bw}) ✓")
-					elif self._gs_debug:
-						print(f"[READOUT] {u}→{v}: backward {v}→{u} NOT pruned (w={bw}) ✗")
-				elif self._gs_debug:
-					print(f"[READOUT] {u}→{v}: no backward edge {v}→{u}")
 			nbrs.sort()
 			return nbrs
 		from collections import deque as _dq
@@ -159,29 +153,13 @@ class gsearch_Backend(snn_Backend):
 				if v not in parent:
 					parent[v] = u
 					q.append(v)
-		if dst not in parent:
-			if self._gs_debug:
-				print(f"\n[RECONSTRUCT] FAILED: destination {dst} not reachable from source {src}")
-				print(f"[RECONSTRUCT] Parent dict: {parent}")
-				print(f"[RECONSTRUCT] Checking all forward edges from source:")
-				for u, v, d in self.fugu_graph.out_edges(src, data=True):
-					if d.get('direction') == 'forward':
-						back_exists = self.fugu_graph.has_edge(v, u)
-						if back_exists:
-							back_weight = self.fugu_graph[v][u].get('weight', 0)
-							back_dir = self.fugu_graph[v][u].get('direction', '')
-							print(f"  Forward {src}→{v}: backward {v}→{src} exists, weight={back_weight}, dir={back_dir}")
-						else:
-							print(f"  Forward {src}→{v}: NO backward edge {v}→{src}")
-			return []
 		out = []
 		cur = dst
 		while cur is not None:
 			out.append(cur)
 			cur = parent[cur]
 		out.reverse()
-		if self._gs_debug:
-			print(f"[RECONSTRUCT] SUCCESS: path from {src} to {dst}: {out}")
+
 		return out
 
 
@@ -309,7 +287,7 @@ class gsearch_Backend(snn_Backend):
 		if source_spiked and self.current_timestep < limit:
 			# Allow a few more steps for pruning to propagate
 			# Reduced from len(nodes) to avoid long loops on huge graphs
-			finish_iters = min(10, len(self.fugu_graph.nodes()))
+			finish_iters = min(1, len(self.fugu_graph.nodes()))
 			for _ in range(finish_iters):
 				self.current_timestep += 1
 				self.nn.step()
@@ -331,18 +309,6 @@ class gsearch_Backend(snn_Backend):
 			cost = backward_sum
 		else:
 			cost = float('inf')
-		
-		# Debug: check for re-spiking neurons
-		if self._gs_debug:
-			multi_spike_neurons = []
-			for name, neuron in self.nn.nrns.items():
-				spike_count = sum(neuron.spike_hist)
-				if spike_count > 1:
-					multi_spike_neurons.append((name, spike_count))
-			if multi_spike_neurons:
-				print(f"\n[DEBUG] WARNING: {len(multi_spike_neurons)} neurons spiked multiple times:")
-				for name, count in multi_spike_neurons[:10]:  # Show first 10
-					print(f"  {name}: {count} spikes")
 		
 		return {
 			'path': path,
