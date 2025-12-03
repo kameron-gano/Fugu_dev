@@ -2,13 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Test suite for Fugu LoihiGSBrick implementation.
-
-Validates that the Fugu brick + gsearch_Backend implementation correctly
-finds shortest paths matching Dijkstra's algorithm on various graph topologies.
-
-STATUS: 24/27 tests passing
-Failing tests have different graph structures than the combined test suite
-and may require further backend tuning for specific edge cases.
 """
 
 import unittest
