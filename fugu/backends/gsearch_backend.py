@@ -100,67 +100,57 @@ class gsearch_Backend(snn_Backend):
 		bundle = self.fugu_graph.graph.get('loihi_gs', {})
 		w_backward_original = bundle.get('w_backward_original', {})
 		
-		# Look for forward edges from current
+		# Look for forward edges from current (ignore forward weight; only direction matters)
+		# Iterate deterministically by sorting on neighbor name
+		neighbors = []
 		for _, nxt, data in self.fugu_graph.out_edges(current, data=True):
-			if data.get('direction') == 'forward' and data.get('weight', 0) == 1.0:
-				# Check if backward edge nxt→current was pruned
-				backward_key = (nxt, current)
-				if backward_key in w_backward_original:
-					original_weight = w_backward_original[backward_key]
-					if original_weight > 0:
-						# Check if this backward edge is now zeroed
-						if self.fugu_graph.has_edge(nxt, current):
-							current_weight = self.fugu_graph[nxt][current].get('weight', 0)
-							if current_weight == 0:
-								return nxt
+			if data.get('direction') == 'forward':
+				neighbors.append(nxt)
+		for nxt in sorted(neighbors):
+			# Check if backward edge nxt→current was pruned
+			backward_key = (nxt, current)
+			if backward_key in w_backward_original and w_backward_original[backward_key] > 0:
+				if self.fugu_graph.has_edge(nxt, current):
+					current_weight = self.fugu_graph[nxt][current].get('weight', 0)
+					if current_weight == 0:
+						return nxt
 		return None
 
 	def reconstruct_path(self) -> list[str]:
 		"""
-		Build the pruned-edge DAG and BFS from source to destination.
+		Reconstruct a path by walking forward hops using pruned-backward-edge signals.
 
-		Include forward edge u→v iff backward edge v→u exists and now has weight==0.
-		Neighbors are visited in sorted order for determinism.
-		Returns a list of neuron names [src..dst] or empty list if unreachable.
+		This mirrors the original readout: starting at source, at each step choose the
+		unique forward edge whose paired backward edge was pruned (weight==0 now).
+		No BFS over the remaining graph is performed; we only follow next hops until
+		reaching the destination or stalling. Returns [src..dst] or [] if unreachable.
 		"""
 		bundle = self.fugu_graph.graph.get('loihi_gs') or {}
 		src = bundle.get('source_neuron')
 		dst = bundle.get('destination_neuron')
 		if not src or not dst or src not in self.fugu_graph or dst not in self.fugu_graph:
 			return []
-		def dag_neighbors(u: str):
-			nbrs = []
-			for _, v, d in self.fugu_graph.out_edges(u, data=True):
-				# Check for forward edges (structural, weight doesn't matter)
-				if d.get('direction') != 'forward':
-					continue
-				# Check if backward edge v,u exists and has weight==0 (pruned)
-				if self.fugu_graph.has_edge(v, u):
-					bd = self.fugu_graph[v][u]
-					bw = bd.get('weight', 0)
-					if bd.get('direction') == 'backward' and bw == 0:
-						nbrs.append(v)
-			nbrs.sort()
-			return nbrs
-		from collections import deque as _dq
-		q = _dq([src])
-		parent = {src: None}
-		while q:
-			u = q.popleft()
-			if u == dst:
-				break
-			for v in dag_neighbors(u):
-				if v not in parent:
-					parent[v] = u
-					q.append(v)
-		out = []
-		cur = dst
-		while cur is not None:
-			out.append(cur)
-			cur = parent[cur]
-		out.reverse()
 
-		return out
+		path: list[str] = [src]
+		self.current_hop = src
+		# Hard cap to avoid infinite loops in case of inconsistent state
+		max_steps = max(1, len(self.fugu_graph.nodes()))
+		visited = set([src])
+		for _ in range(max_steps):
+			if path[-1] == dst:
+				return path
+			nxt = self.readout_next_hop()
+			if nxt is None:
+				break
+			path.append(nxt)
+			if nxt in visited:
+				# Detected a loop; abort
+				return []
+			visited.add(nxt)
+			self.current_hop = nxt
+
+		# If we exited without reaching dst, report unreachable
+		return path if path and path[-1] == dst else []
 
 
 	def prune_step(self) -> dict[str, Any]:
