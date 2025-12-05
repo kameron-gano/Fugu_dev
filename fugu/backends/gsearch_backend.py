@@ -114,6 +114,7 @@ class gsearch_Backend(snn_Backend):
 					current_weight = self.fugu_graph[nxt][current].get('weight', 0)
 					if current_weight == 0:
 						return nxt
+
 		return None
 
 	def reconstruct_path(self) -> list[str]:
@@ -133,10 +134,8 @@ class gsearch_Backend(snn_Backend):
 
 		path: list[str] = [src]
 		self.current_hop = src
-		# Hard cap to avoid infinite loops in case of inconsistent state
-		max_steps = max(1, len(self.fugu_graph.nodes()))
 		visited = set([src])
-		for _ in range(max_steps):
+		while path[-1] != dst:
 			if path[-1] == dst:
 				return path
 			nxt = self.readout_next_hop()
@@ -145,12 +144,13 @@ class gsearch_Backend(snn_Backend):
 			path.append(nxt)
 			if nxt in visited:
 				# Detected a loop; abort
-				return []
+				raise RuntimeError("Cycle located in readout.")
 			visited.add(nxt)
 			self.current_hop = nxt
 
 		# If we exited without reaching dst, report unreachable
 		return path if path and path[-1] == dst else []
+
 
 
 	def prune_step(self) -> dict[str, Any]:
@@ -199,11 +199,7 @@ class gsearch_Backend(snn_Backend):
 					if did_spike:
 						# Prune backward edge j→i
 						edges_to_prune.append((j, i))
-						if self._gs_debug:
-							print(f"[PRUNE] t={current_index}: i={i} spiked; j={j} spiked at step {check_index} (delay={delay}); prune ({j}→{i})")
-				
-				if self._gs_debug and not did_spike and check_index >= 0:
-					print(f"[SKIP] t={current_index}: i={i} spiked; j={j} did NOT spike at step {check_index} (delay={delay}); no prune")
+		
 		
 		zeroed = self.zero_backward_edges(edges_to_prune)
 		# Only compute remaining count if debug mode is on (expensive for large graphs)
@@ -245,10 +241,6 @@ class gsearch_Backend(snn_Backend):
 		if dst not in self.nn.nrns or src not in self.nn.nrns:
 			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
 
-		# Destination neuron starts with voltage=1.5 (above threshold=0.9)
-		# It will spike naturally on first step via threshold-crossing lambda
-		# No manual injection needed - let the lambda handle it properly with v_prev tracking
-		dest_neuron = self.nn.nrns[dst]
 		# Destination already initialized with v=1.5 and v_prev=0.0 from brick
 		# First step: v_prev=0.0 < 1.0, v=1.5 >= 1.0 → spike
 		# After spike: v=1.5 (reset), v_prev=1.5
@@ -275,17 +267,10 @@ class gsearch_Backend(snn_Backend):
 			source_spiked = last_diag.get('source_spiked', False)
 		
 		if source_spiked and self.current_timestep < limit:
-			# Allow a few more steps for pruning to propagate
-			# Reduced from len(nodes) to avoid long loops on huge graphs
-			finish_iters = min(1, len(self.fugu_graph.nodes()))
-			for _ in range(finish_iters):
-				self.current_timestep += 1
-				self.nn.step()
-				self.prune_step()
-				# Early exit if a path becomes available
-				p = self.reconstruct_path()
-				if p:
-					break
+			self.current_timestep += 1
+			self.nn.step()
+			self.prune_step()
+
 
 		path = self.reconstruct_path() if source_spiked else []
 		# Compute cost: sum of backward edge delays (post,pre) equals original edge costs
