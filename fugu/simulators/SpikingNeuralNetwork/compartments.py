@@ -17,6 +17,10 @@ class Dendrite(abc.ABC):
     ``update`` to expose their internal state.
     """
 
+    def __init__(self):
+        # Cached telemetry snapshot exposed via observe()
+        self._latest_observation = {}
+
     @abc.abstractmethod
     def step(self, presyn_current: float) -> float:  # pragma: no cover - interface
         """Advance internal state given summed presynaptic current.
@@ -37,6 +41,7 @@ class Dendrite(abc.ABC):
 
         Subclasses decide how to:
           * read presynaptic spikes
+
           * advance internal state
           * apply modulation to the neuron's LIF step (via lif_update callback)
 
@@ -45,6 +50,10 @@ class Dendrite(abc.ABC):
             lif_update (Callable): Helper to perform one LIF update with optional overrides.
         """
         raise NotImplementedError
+
+    def observe(self):
+        """Return the most recent telemetry dictionary for diagnostics."""
+        return dict(self._latest_observation)
 
 
 class RecurrentInhibition(Dendrite):
@@ -56,6 +65,7 @@ class RecurrentInhibition(Dendrite):
     """
 
     def __init__(self, tau_syn: float = 1.0, dt: float = 1.0):
+        super().__init__()
         tau_syn = int_to_float(tau_syn)
         dt = int_to_float(dt)
         validate_type(tau_syn, float_types)
@@ -67,17 +77,19 @@ class RecurrentInhibition(Dendrite):
         self.tau_syn = tau_syn
         self.dt = dt
         self.decay = np.exp(-dt / tau_syn)
-        self._trace = 0.0
+        self.soma_current = 0.0
+        self.inhibition = 0.0
+        self._latest_observation = {
+            "synaptic_input": 0.0,
+            "inhibition": 0.0,
+            "soma_current": 0.0,
+        }
 
     def step(self, presyn_current: float) -> float:
         presyn_current = int_to_float(presyn_current)
         validate_type(presyn_current, float_types)
-        self._trace = self.decay * self._trace + presyn_current
-        return self._trace
-
-    @property
-    def inhibition(self) -> float:
-        return self._trace
+        self.inhibition = self.decay * self.inhibition + presyn_current
+        return self.inhibition
 
     def update(self, neuron, lif_update):
         """Apply recurrent inhibition as subtractive bias before LIF update."""
@@ -90,19 +102,23 @@ class RecurrentInhibition(Dendrite):
         # Advance trace
         self.step(synaptic_input)
         # Expose diagnostics for LCA
-        try:
-            neuron.lateral_inhibition = self.inhibition
-        except Exception:
-            pass
         b_eff = neuron._b - self.inhibition
-        try:
-            neuron.soma_current = b_eff
-        except Exception:
-            pass
+        self.soma_current = b_eff
+        self._latest_observation = {
+            "synaptic_input": synaptic_input,
+            "inhibition": self.inhibition,
+            "soma_current": b_eff,
+        }
+
         lif_update(bias=b_eff, ignore_presyn=True)
 
     def reset(self):
-        self._trace = 0.0
+        self.inhibition = 0.0
+        self._latest_observation = {
+            "synaptic_input": 0.0,
+            "inhibition": 0.0,
+            "soma_current": 0.0,
+        }
 
     def __repr__(self):
         return f"RecurrentInhibition(tau_syn={self.tau_syn}, dt={self.dt})"

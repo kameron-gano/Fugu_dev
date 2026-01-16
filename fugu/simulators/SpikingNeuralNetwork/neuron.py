@@ -478,9 +478,6 @@ class GeneralNeuron(LIFNeuron):
         else:
             raise TypeError("compartment must be None or dict")
 
-        # Expose observables for diagnostics
-        self.soma_current = 0.0
-        self.lateral_inhibition = 0.0
         
         # Store spike threshold lambda - resolve string keys to functions
         if isinstance(spike_thresh_lambda, str):

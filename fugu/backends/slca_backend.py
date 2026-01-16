@@ -71,7 +71,7 @@ class slca_Backend(snn_Backend):
         self.spikes_prev = np.zeros(self.N)         # last-step spikes (0/1)
 
         # Let the parent build the physical SNN (neurons/synapses).
-        # We won't rely on presynaptic synapses; we push Δv via bias per step.
+        # We won't rely on presynaptic synapses; we push delta v via bias per step.
         super().compile(scaffold, compile_args)
 
         # Update neuron biases with computed feedforward drive
@@ -84,8 +84,16 @@ class slca_Backend(snn_Backend):
         lca_neuron_idx = 0
         for name, neuron in self.nn.nrns.items():
             if "neuron_" in name and "complete" not in name:
-                if hasattr(neuron, 'soma_current'):
-                    self.soma_current[lca_neuron_idx] = neuron.soma_current
+                compartment = getattr(neuron, "compartment", None)
+                if compartment is not None:
+                    observer = getattr(compartment, "observe", None)
+                    if callable(observer):
+                        obs = observer()
+                        self.soma_current[lca_neuron_idx] = obs.get(
+                            "soma_current", getattr(compartment, "soma_current", 0.0)
+                        )
+                    else:
+                        self.soma_current[lca_neuron_idx] = getattr(compartment, "soma_current", 0.0)
                 else:
                     self.soma_current[lca_neuron_idx] = 0.0
                 lca_neuron_idx += 1
