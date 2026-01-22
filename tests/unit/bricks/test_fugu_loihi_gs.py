@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 from fugu import Scaffold
 from fugu.bricks import LoihiGSBrick
 from fugu.backends import gsearch_Backend
-from loihi_graph_search import LoihiGraphSearch, preprocess_fanout_constraint
+from tests.unit.bricks.loihi_graph_search import LoihiGraphSearch, preprocess_fanout_constraint
 import networkx as nx
 import pytest
 
@@ -99,11 +99,11 @@ class TestFuguLoihiGraphSearch(unittest.TestCase):
         # Compile and run
         backend = gsearch_Backend()
         backend.compile(scaffold, {})
-        # Use generous step limit (graph may grow significantly during preprocessing)
+
         max_steps = 5000
         result = backend.run(n_steps=max_steps)
         
-        # Extract neuron path produced by backend (already shortest path or empty)
+        # Extract neuron path produced by backend 
         path_neurons = result['path']
         backend_cost = result.get('cost', float('inf'))
 

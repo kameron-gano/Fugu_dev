@@ -59,8 +59,6 @@ class LoihiGSBrick(Brick):
         self.source = source
         self.destination = destination
         
-
-        # Populated after preprocess
         self.node_list: List[Any] = []
         self.edges: List[Tuple[Any, Any, int]] = []
         self.node_to_neuron: Dict[Any, str] = {}
@@ -147,7 +145,7 @@ class LoihiGSBrick(Brick):
         
         This preserves total backward delay:
         - In Loihi: d_{i,j} = c - 1
-        - After split: d_{aux,i} = 0 and d_{j,aux} = c - 1, total = c - 1 ✓
+        - After split: d_{aux,i} = 0 and d_{j,aux} = c - 1, total = c - 1 
         - In Fugu (min delay=1): we add 1 to all delays during synapse creation
         """
         # build adjacency map to compute outdegree
@@ -194,7 +192,7 @@ class LoihiGSBrick(Brick):
         # (covered by building from original edges above)
         return new_nodes, new_edges
 
-    # ---- mapping to Loihi graph ----
+
     def _map_to_loihi(self, graph: nx.DiGraph, nodes: List[Any], edges: List[Tuple[Any, Any, int]]):
         """Add neurons and synapses to the provided networkx DiGraph.
 
@@ -291,9 +289,7 @@ class LoihiGSBrick(Brick):
         port.channels['data'] = ChannelSpec(name='data', coding=['Raster', 'Undefined'])
         return {port.name: port}
 
-    # ------------------------------------------------------------------
-    # Internal construction routine shared by legacy build and build2
-    # ------------------------------------------------------------------
+
     def _construct(self, graph: nx.DiGraph):
         # Parse input graph
         nodes, edges = self._parse_input()

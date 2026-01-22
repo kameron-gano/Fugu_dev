@@ -84,8 +84,8 @@ class gsearch_Backend(snn_Backend):
 
 		Algorithm from standalone implementation (Lines 14-20):
 		For current node i, find node j such that:
-		1. There's a forward edge i→j (direction='forward', weight=1)
-		2. The backward edge j→i was PRUNED (originally had weight>0, now weight=0)
+		1. There's a forward edge i to j (direction='forward', weight=1)
+		2. The backward edge j to i was PRUNED (originally had weight>0, now weight=0)
 
 		This method inspects `self.current_hop` to determine current node.
 
@@ -107,7 +107,7 @@ class gsearch_Backend(snn_Backend):
 			if data.get('direction') == 'forward':
 				neighbors.append(nxt)
 		for nxt in sorted(neighbors):
-			# Check if backward edge nxt→current was pruned
+			# Check if backward edge nxt to current was pruned
 			backward_key = (nxt, current)
 			if backward_key in w_backward_original and w_backward_original[backward_key] > 0:
 				if self.fugu_graph.has_edge(nxt, current):
@@ -157,8 +157,8 @@ class gsearch_Backend(snn_Backend):
 		"""Perform one graph-search pruning step (Lines 7-12 of algorithm).
 
 		For each neuron i that spiked at current timestep k:
-		  For each fanin j with backward edge j→i (edge stored as (j,i) with direction='backward'):
-		    If j spiked at timestep (k - d_{j,i}), prune edge j→i
+		  For each fanin j with backward edge j to i (edge stored as (j,i) with direction='backward'):
+		    If j spiked at timestep (k - d_{j,i}), prune edge j to i
 		
 		Returns diagnostics: {'zeroed': int, 'remaining': int, 'source_spiked': bool}.
 		"""
@@ -177,9 +177,9 @@ class gsearch_Backend(snn_Backend):
 		
 		edges_to_prune: list[tuple[str, str]] = []
 		
-		# Algorithm 1 Lines 7-9: for all j fanin to i, if s_i[t+1]=1 and s_j[t-d_{j,i}]=1, prune j→i
+		# Algorithm 1 Lines 7-9: for all j fanin to i, if s_i[t+1]=1 and s_j[t-d_{j,i}]=1, prune j to i edge
 		# In our naming: i = neuron that just spiked, j = fanin neuron
-		# Backward edge j→i is stored in graph as (j, i) with direction='backward'
+		# Backward edge j to i is stored in graph as (j, i) with direction='backward'
 		for i in newly_spiked:
 			# Get all incoming backward edges: (j, i) where j is fanin to i
 			for j, _, edge_data in self.fugu_graph.in_edges(i, data=True):
@@ -197,7 +197,7 @@ class gsearch_Backend(snn_Backend):
 				if check_index >= 0 and check_index < len(j_neuron.spike_hist):
 					did_spike = j_neuron.spike_hist[check_index]
 					if did_spike:
-						# Prune backward edge j→i
+						# Prune backward edge j-i
 						edges_to_prune.append((j, i))
 		
 		
@@ -242,9 +242,9 @@ class gsearch_Backend(snn_Backend):
 			return {'path': [], 'steps': 0, 'source_spiked': False, 'remaining_backward': len(self.remaining_backward_edges())}
 
 		# Destination already initialized with v=1.5 and v_prev=0.0 from brick
-		# First step: v_prev=0.0 < 1.0, v=1.5 >= 1.0 → spike
+		# First step: v_prev=0.0 < 1.0, v=1.5 >= 1.0 - spike
 		# After spike: v=1.5 (reset), v_prev=1.5
-		# Future steps: v_prev=1.5 >= 1.0 → no more spikes
+		# Future steps: v_prev=1.5 >= 1.0 - no more spikes
 		self.spike_time[dst] = 0  # Will spike at algorithm time 0
 
 		limit = int(n_steps) if n_steps is not None else max(10, 10 * len(self.fugu_graph.nodes))

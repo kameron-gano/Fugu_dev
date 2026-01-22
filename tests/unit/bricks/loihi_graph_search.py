@@ -151,7 +151,7 @@ class LoihiGraphSearch:
         Read out next hop from current node (READOUTNEXTHOP function, Lines 14-20).
         
         The next hop is the node j such that:
-        1. There's a forward edge i→j in the original graph
+        1. There's a forward edge i to j in the original graph
         2. The backward edge from j to i was PRUNED
         
         Matrix convention: w_backward[i][j] represents backward edge from j to i
@@ -166,10 +166,10 @@ class LoihiGraphSearch:
         """
         i = self.node_to_idx[current]
         
-        # For all j with forward edge i→j
+        # For all j with forward edge i to j
         for j in range(self.n_nodes):
             if self.w_forward[i][j] == 1.0:
-                # Check if backward edge j→i (stored as w_backward[i][j]) was pruned
+                # Check if backward edge j to i (stored as w_backward[i][j]) was pruned
                 if self.w_backward_original[i][j] > 0 and self.w_backward[i][j] == 0:
                     return self.nodes[j]
         
