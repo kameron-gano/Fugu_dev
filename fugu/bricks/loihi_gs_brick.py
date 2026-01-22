@@ -188,8 +188,6 @@ class LoihiGSBrick(Brick):
                     # But this matches what test_loihi_gs_brick.py expects
                     new_edges.append((aux, v, c - 1))
 
-        # also add edges from nodes that originally had no outgoing entries
-        # (covered by building from original edges above)
         return new_nodes, new_edges
 
 

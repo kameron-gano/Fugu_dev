@@ -1,3 +1,10 @@
+"""
+Backend for implementing the Spiking Locally Competitive Algorithm as specified in
+
+[1] P. T. P. Tang, T.-H. Lin, and M. Davies, "Sparse coding by spiking neural networks: 
+Convergence theory and computational results," arXiv preprint arXiv:1705.05475, May 2017
+"""
+
 from collections import deque
 from warnings import warn
 
@@ -25,7 +32,7 @@ class slca_Backend(snn_Backend):
           - y   : (M,)     observed patch (flattened)
           - K   : (M x M)  optional blur operator. If provided, Psi = K @ Phi.
                            Otherwise Psi = Phi.
-          - lam : float    L1 threshold λ (default 0.1)
+          - lam : float    L1 threshold lambda (default 0.1)
           - dt : float     simulation step (default 1e-4)
           - tau_syn : float synaptic time constant (default 1e-2)
           - T_steps : int  total S-LCA steps to run in run(), if not overridden
@@ -67,7 +74,7 @@ class slca_Backend(snn_Backend):
         self.N = self.Phi.shape[1]
         self.inhibition = np.zeros(self.N)                   # filtered spike traces
         self.soma_current = np.zeros(self.N)                  # soma currents
-        self.int_soma_current = np.zeros(self.N)              # ∫ μ dt (for Tλ(u) readout)
+        self.int_soma_current = np.zeros(self.N)              # integral(mu) dt (for T_lambda(u) readout)
         self.spikes_prev = np.zeros(self.N)         # last-step spikes (0/1)
 
         # Let the parent build the physical SNN (neurons/synapses).
@@ -117,7 +124,7 @@ class slca_Backend(snn_Backend):
               dict with 'a_tail', 'a_rate', 'counts', 'x_hat', 'b', 'W'.
 
             Notes:
-            - We do NOT rely on input spikes; Δv is injected via bias each step.
+            - We do NOT rely on input spikes; delta_v is injected via bias each step.
             - Internally, integration accumulates per-step values; rescaling maps to per-second units.
             """
             if dt <= 0:

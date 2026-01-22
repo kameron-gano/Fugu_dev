@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-Direct implementation of the Loihi graph search algorithm from Algorithm 1.
+FOR TESTING PURPOSES. Source of ground truth for the Fugu implementation and the accompanying test
+harness, test_fugu_loihi.py
+
+Direct implementation of the Loihi graph search algorithm from [1].
+
+[1] M. Davies et al., "Advancing Neuromorphic Computing With Loihi: A Survey of Results and Outlook," 
+in Proceedings of the IEEE, vol. 109, no. 5, pp. 911-934, May 2021, doi: 10.1109/JPROC.2021.3067593.
 
 This implements the neuromorphic wavefront propagation algorithm that finds
 shortest paths in weighted directed graphs using spiking neural network dynamics.
@@ -13,9 +19,8 @@ from collections import defaultdict
 
 class LoihiGraphSearch:
     """
-    Implementation of Algorithm 1: Loihi graph search algorithm.
     
-    The algorithm uses neuromorphic wavefront propagation to find shortest paths.
+    The algorithm uses wavefront propagation to find shortest paths.
     Key features:
     - Parallel wavefront advancement using neuron dynamics
     - Backward edge pruning to trace shortest path
@@ -82,7 +87,6 @@ class LoihiGraphSearch:
                 self.w_backward[i][j] = 1.0  # from j to i
                 self.d_backward[i][j] = cost  # Use cost directly (min delay=1)
         
-        # Keep a copy of original backward weights to detect pruned edges during readout
         self.w_backward_original = self.w_backward.copy()
     
     def advance_wavefront(self, t: int):
@@ -117,7 +121,7 @@ class LoihiGraphSearch:
         self.v = v_new
         
         # Line 6: Update spike states (spike when crossing threshold)
-        # s_i[t+1] ← 1 if v_i[t+1] ≥ 1 ∧ v_i[t] < 1
+        # s_i[t+1] = 1 if v_i[t+1] >= 1 and v_i[t] < 1
         s_new = self.s.copy()
         newly_spiked = []  # Track which neurons spike THIS timestep
         for i in range(self.n_nodes):
@@ -192,7 +196,7 @@ class LoihiGraphSearch:
         
         t = 1  # Start from t=1 since t=0 is already in spike_history
         
-        # Lines 22-25: Run until source spikes
+
         src_idx = self.node_to_idx[self.source]
         while self.s[src_idx] == 0 and t < max_steps:
             self.advance_wavefront(t)
@@ -202,11 +206,11 @@ class LoihiGraphSearch:
             # Source never spiked - no path
             return [], 0, t
         
-        # Line 26: One extra step
+
         self.advance_wavefront(t)
         t += 1
         
-        # Lines 27-31: Read out path
+
         path = [self.source]
         n = 0
         

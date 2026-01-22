@@ -39,7 +39,7 @@ class gsearch_Backend(snn_Backend):
 		"""Zero out backward edges in both the graph and the neural network.
 		
 		Args:
-		    edges_to_zero: List of (post, pre) tuples representing backward edges post←pre.
+		    edges_to_zero: List of (post, pre) tuples representing backward edges post<-pre.
 		                   The graph stores this as edge (post, pre) with direction='backward'.
 		
 		Returns:
@@ -47,7 +47,7 @@ class gsearch_Backend(snn_Backend):
 		"""
 		zeroed_count = 0
 		for post, pre in edges_to_zero:
-			# The graph stores backward edge post←pre as (post, pre) with direction='backward'
+			# The graph stores backward edge post<-pre as (post, pre) with direction='backward'
 			if self.fugu_graph.has_edge(post, pre):
 				edge_data = self.fugu_graph[post][pre]
 				if edge_data.get('direction') == 'backward' and edge_data.get('weight', 0) > 0:
