@@ -425,7 +425,7 @@ class GeneralNeuron(LIFNeuron):
         p=1.0,
         record=False,
         compartment=None,
-        spike_thresh_lambda: Callable[[float, float], bool] | str = None,
+        spike_thresh_lambda: Callable | str = None,
     ):
         """
         Mirrors ``LIFNeuron`` signature and adds an optional ``compartment`` field.
