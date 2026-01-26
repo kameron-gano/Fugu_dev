@@ -4,7 +4,7 @@
 import abc
 import numbers
 import sys
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 import numpy as np
 
 from fugu.utils.types import bool_types, float_types, str_types
@@ -425,7 +425,7 @@ class GeneralNeuron(LIFNeuron):
         p=1.0,
         record=False,
         compartment=None,
-        spike_thresh_lambda: Callable | str = None,
+        spike_thresh_lambda: Optional[Union[Callable, str]] = None,
     ):
         """
         Mirrors ``LIFNeuron`` signature and adds an optional ``compartment`` field.

@@ -146,14 +146,14 @@ class snntorch_Backend(snn_Backend):
 		"""
 		_require_snntorch()
 		super().__init__()
-		self.model: nn.Module | None = None
+		self.model: Optional[nn.Module] = None
 		self.input_name = input_name
 		self.input_coding = input_coding
-		self.scaffold: Scaffold | None = None
-		self._input_tag: str | None = None
-		self._num_inputs: int | None = None
-		self._num_steps: int | None = None
-		self._output_neuron_numbers: List[int] | None = None
+		self.scaffold: Optional[Scaffold] = None
+		self._input_tag: Optional[str] = None
+		self._num_inputs: Optional[int] = None
+		self._num_steps: Optional[int] = None
+		self._output_neuron_numbers: Optional[List[int]] = None
 
 	def group_torch_layers(self, model: nn.Module) -> List[Dict[str, Any]]:
 		"""Thin instance wrapper around the module-level helper."""
@@ -188,7 +188,7 @@ class snntorch_Backend(snn_Backend):
 		self._output_neuron_numbers = get_output_neuron_numbers(scaffold)
 		return scaffold
 
-	def compile(self, model: nn.Module, compile_args: Dict[str, Any] | None = None):
+	def compile(self, model: nn.Module, compile_args: Optional[Dict[str, Any]] = None):
 		"""Compile a snnTorch ``model`` by first converting it to a Fugu scaffold.
 
 		Args:
