@@ -10,8 +10,21 @@ import json
 f = open('network.json')
 network = json.load(f)
 
-f_fanin = open('network_fanin.json')
-network_fanin = json.load(f_fanin)
+network_fanin = {"neuron_dict": {}}
+
+for neuron_id in sorted(network["neuron_dict"], key=lambda x: int(x)):
+    neuron_idx = int(neuron_id)
+    core_z = min(neuron_idx // 50, 3)
+    network_fanin["neuron_dict"][neuron_id] = {
+        "fan-in": network["neuron_dict"][neuron_id].get("fan-in", []),
+        "partition_id": core_z,
+        "core": [0, 0, core_z]
+    }
+
+# dump fan-in + core assignment to network_fanin.json
+f_fanin = 'network_fanin.json'
+with open(f_fanin, 'w') as f_fanin:
+    json.dump(network_fanin, f_fanin)
 
 # cluster sizes (cluster_size_x, cluster_size_y)
 cluster_size_x = 0
@@ -82,7 +95,7 @@ for i in range(cluster_size_x):
 # axon_dict{pre-synaptic neuron:{(core_id): axon_id}}
 axon_dict = {}
 
-for i in network["neuron_dict"]:
+for i in sorted(network["neuron_dict"], key=lambda x: int(x)):
     neuron_model = (int(network["neuron_dict"][i]["th"]),
                     int(network["neuron_dict"][i]["leak"]),
                     int(network["neuron_dict"][i]["bias"]),
@@ -97,7 +110,7 @@ for i in network["neuron_dict"]:
     cores_list[core_id[0]][core_id[1]][core_id[2]]["neurons"].append({"model": cores_list_neuron_model[core_id[0]][core_id[1]][core_id[2]][neuron_model], "fanout": []}) 
     axon_dict[i] = {}
 
-for i in network["synapse_dict"]:
+for i in sorted(network["synapse_dict"], key=lambda x: int(x)):
     post_neuron_core = tuple(network_fanin["neuron_dict"][i]["core"])
     post_neuron_id = network["neuron_dict"][i]["neuron_id"] # the neuron id in its core      
     for j in network["synapse_dict"][i]:
