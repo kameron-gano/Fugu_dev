@@ -31,10 +31,6 @@ def generate_random_balanced_mapping(neuron_ids, num_cores=4, seed=None):
 f = open('network.json')
 network = json.load(f)
 
-<<<<<<< Updated upstream
-with open('core_mappings.json') as f_map:
-    core_mappings = json.load(f_map)
-=======
 mapping_file = 'core_mappings.json'
 
 seed = 42
@@ -50,7 +46,6 @@ core_mappings = {
 }
 with open(mapping_file, 'w') as f_map:
     json.dump(core_mappings, f_map)
->>>>>>> Stashed changes
 
 mapping_neurons = core_mappings.get("neuron_dict", core_mappings)
 

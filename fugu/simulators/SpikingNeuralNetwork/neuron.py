@@ -202,9 +202,9 @@ class LIFNeuron(Neuron):
             try:
                 spike_condition = bool(spike_thresh_lambda(self.v))
             except Exception:
-                spike_condition = self.v > self._T
+                spike_condition = self.v >= self._T
         else:
-            spike_condition = self.v > self._T
+            spike_condition = self.v >= self._T
 
         if spike_condition:
             if np.random.random(1) <= self.prob:
