@@ -5,36 +5,13 @@ generate the network_act.json file as the input for ACT simulation
 '''
 
 import json
-# import act_parameters as para
+import act_parameters as para
   
-f = open('network.json')
+f = open('networks/network.json')
 network = json.load(f)
 
-with open('core_mappings.json') as f_map:
-    core_mappings = json.load(f_map)
-
-mapping_neurons = core_mappings.get("neuron_dict", core_mappings)
-
-network_fanin = {"neuron_dict": {}}
-
-for neuron_id in sorted(network["neuron_dict"], key=lambda x: int(x)):
-    if neuron_id not in mapping_neurons:
-        raise KeyError(f"Missing mapping for neuron {neuron_id} in core_mappings.json")
-
-    mapping_entry = mapping_neurons[neuron_id]
-    if "core" not in mapping_entry or "partition_id" not in mapping_entry:
-        raise KeyError(f"Mapping for neuron {neuron_id} must include 'core' and 'partition_id'")
-
-    network_fanin["neuron_dict"][neuron_id] = {
-        "fan-in": network["neuron_dict"][neuron_id].get("fan-in", []),
-        "partition_id": mapping_entry["partition_id"],
-        "core": mapping_entry["core"]
-    }
-
-# dump fan-in + core assignment to network_fanin.json
-f_fanin = 'network_fanin.json'
-with open(f_fanin, 'w') as f_fanin:
-    json.dump(network_fanin, f_fanin)
+f_fanin = open('networks/network_fanin.json')
+network_fanin = json.load(f_fanin)
 
 # cluster sizes (cluster_size_x, cluster_size_y)
 cluster_size_x = 0
@@ -105,7 +82,7 @@ for i in range(cluster_size_x):
 # axon_dict{pre-synaptic neuron:{(core_id): axon_id}}
 axon_dict = {}
 
-for i in sorted(network["neuron_dict"], key=lambda x: int(x)):
+for i in network["neuron_dict"]:
     neuron_model = (int(network["neuron_dict"][i]["th"]),
                     int(network["neuron_dict"][i]["leak"]),
                     int(network["neuron_dict"][i]["bias"]),
@@ -120,7 +97,7 @@ for i in sorted(network["neuron_dict"], key=lambda x: int(x)):
     cores_list[core_id[0]][core_id[1]][core_id[2]]["neurons"].append({"model": cores_list_neuron_model[core_id[0]][core_id[1]][core_id[2]][neuron_model], "fanout": []}) 
     axon_dict[i] = {}
 
-for i in sorted(network["synapse_dict"], key=lambda x: int(x)):
+for i in network["synapse_dict"]:
     post_neuron_core = tuple(network_fanin["neuron_dict"][i]["core"])
     post_neuron_id = network["neuron_dict"][i]["neuron_id"] # the neuron id in its core      
     for j in network["synapse_dict"][i]:
@@ -214,21 +191,21 @@ for i in network_act["cores"]:
 
 #assert cluster_size_x <= para.GRID_X, f"GRID_X should not be larger than {para.GRID_X}, got: {cluster_size_x}"
 #assert cluster_size_y <= para.GRID_Y, f"GRID_Y should not be larger than {para.GRID_Y}, got: {cluster_size_y}"
-# assert max_num_neuron <= para.NEURONS_PER_CORE, f"NEURONS_PER_CORE should not be larger than {para.NEURONS_PER_CORE}, got: {max_num_neuron}"
-# assert max_size_fanout_table <= para.NEURON_FANOUT_TABLE, f"NEURON_FANOUT_TABLE should not be larger than {para.NEURON_FANOUT_TABLE}, got: {max_size_fanout_table}"
-# assert max_num_axon <= para.INPUT_AXONS_PER_CORE, f"INPUT_AXONS_PER_CORE should not be larger than {para.INPUT_AXONS_PER_CORE}, got: {max_num_axon}"
-# assert max_size_axon_table <= para.INPUT_AXON_TABLE_SZ, f"INPUT_AXON_TABLE_SZ should not be larger than {para.INPUT_AXON_TABLE_SZ}, got: {max_size_axon_table}"
-# assert max_neuron_fanout <= para.MAX_NEURON_FANOUT, f"MAX_NEURON_FANOUT should not be larger than {para.MAX_NEURON_FANOUT} expected, got: {max_neuron_fanout}"
-# assert max_num_remote <= para.REMOTE_CORES, f"REMOTE_CORES should not be larger than {para.REMOTE_CORES}, got: {max_num_remote}"
-# assert (max_num_neuron_model+1) <= para.NEURON_MODELS, f"NEURON_MODELS should not be larger than {para.NEURON_MODELS}, got: {(max_num_neuron_model+1)}"
-# assert max_num_fanin <= para.LEN_FANIN_HT, f"LEN_FANIN_HT should not be larger than {para.LEN_FANIN_HT}, got: {max_num_fanin}"
+assert max_num_neuron <= para.NEURONS_PER_CORE, f"NEURONS_PER_CORE should not be larger than {para.NEURONS_PER_CORE}, got: {max_num_neuron}"
+assert max_size_fanout_table <= para.NEURON_FANOUT_TABLE, f"NEURON_FANOUT_TABLE should not be larger than {para.NEURON_FANOUT_TABLE}, got: {max_size_fanout_table}"
+assert max_num_axon <= para.INPUT_AXONS_PER_CORE, f"INPUT_AXONS_PER_CORE should not be larger than {para.INPUT_AXONS_PER_CORE}, got: {max_num_axon}"
+assert max_size_axon_table <= para.INPUT_AXON_TABLE_SZ, f"INPUT_AXON_TABLE_SZ should not be larger than {para.INPUT_AXON_TABLE_SZ}, got: {max_size_axon_table}"
+assert max_neuron_fanout <= para.MAX_NEURON_FANOUT, f"MAX_NEURON_FANOUT should not be larger than {para.MAX_NEURON_FANOUT} expected, got: {max_neuron_fanout}"
+assert max_num_remote <= para.REMOTE_CORES, f"REMOTE_CORES should not be larger than {para.REMOTE_CORES}, got: {max_num_remote}"
+assert (max_num_neuron_model+1) <= para.NEURON_MODELS, f"NEURON_MODELS should not be larger than {para.NEURON_MODELS}, got: {(max_num_neuron_model+1)}"
+assert max_num_fanin <= para.LEN_FANIN_HT, f"LEN_FANIN_HT should not be larger than {para.LEN_FANIN_HT}, got: {max_num_fanin}"
 
-f_act = 'act_network.json'
+f_act = 'act_json/act_network.json'
 with open(f_act, 'w') as f_act:
     json.dump(network_act, f_act)  
 
 # dump neuron index into network_fanin_updated.json
-f_fanin_updated = 'network_fanin_updated.json'
+f_fanin_updated = 'networks/network_fanin_updated.json'
 with open(f_fanin_updated, 'w') as f_fanin_updated:
     json.dump(network_fanin, f_fanin_updated)  
 
