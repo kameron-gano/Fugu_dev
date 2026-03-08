@@ -5,13 +5,52 @@ generate the network_act.json file as the input for ACT simulation
 '''
 
 import json
+import random
 # import act_parameters as para
+
+
+def generate_random_balanced_mapping(neuron_ids, num_cores=4, seed=None):
+    rng = random.Random(seed)
+    shuffled = list(neuron_ids)
+    rng.shuffle(shuffled)
+
+    mapping = {}
+    base = len(shuffled) // num_cores
+    rem = len(shuffled) % num_cores
+    start = 0
+    for core_id in range(num_cores):
+        size = base + (1 if core_id < rem else 0)
+        for neuron_id in shuffled[start:start + size]:
+            mapping[neuron_id] = {
+                "partition_id": core_id,
+                "core": [0, 0, core_id]
+            }
+        start += size
+    return mapping
   
 f = open('network.json')
 network = json.load(f)
 
+<<<<<<< Updated upstream
 with open('core_mappings.json') as f_map:
     core_mappings = json.load(f_map)
+=======
+mapping_file = 'core_mappings.json'
+
+seed = 42
+neuron_ids = sorted(network["neuron_dict"], key=lambda x: int(x))
+random_mapping = generate_random_balanced_mapping(neuron_ids, num_cores=4, seed=seed)
+core_mappings = {
+    "metadata": {
+        "generated": "random_balanced",
+        "seed": seed,
+        "num_cores": 4
+    },
+    "neuron_dict": random_mapping
+}
+with open(mapping_file, 'w') as f_map:
+    json.dump(core_mappings, f_map)
+>>>>>>> Stashed changes
 
 mapping_neurons = core_mappings.get("neuron_dict", core_mappings)
 
