@@ -365,18 +365,14 @@ def compute_network_stats(network_act):
     return stats
 
 
-def write_expected_grid_size(path, cluster_size_x, cluster_size_y):
-    with open(path, 'w') as f:
-        f.write(f"{cluster_size_x} x {cluster_size_y} gridded clusters.\n")
-
 
 def generate_act_network_assets(
+    core_mappings=None,
     network_path='network.json',
     mapping_file='core_mappings.json',
     fanin_file='network_fanin.json',
     act_file='act_network.json',
     fanin_updated_file='network_fanin_updated.json',
-    grid_size_file='expected_grid_size.txt',
     num_cores=4,
     seed=42,
     balanced=True,
@@ -385,14 +381,7 @@ def generate_act_network_assets(
     save_to_nscale=True,
 ):
     network = load_network(network_path)
-    neuron_ids = sorted(network["neuron_dict"], key=lambda x: int(x))
 
-    core_mappings = build_core_mappings(
-        neuron_ids,
-        num_cores=num_cores,
-        seed=seed
-    )
-    write_json(mapping_file, core_mappings, save_to_nscale=save_to_nscale)
 
     network_fanin = build_network_fanin(network, core_mappings)
     write_json(fanin_file, network_fanin, save_to_nscale=save_to_nscale)
@@ -435,7 +424,6 @@ def generate_act_network_assets(
 
     write_json(act_file, network_act, save_to_nscale=save_to_nscale)
     write_json(fanin_updated_file, network_fanin, save_to_nscale=save_to_nscale)
-    write_expected_grid_size(grid_size_file, cluster_size_x, cluster_size_y)
 
     print("successfully generate act_json/act_network.json")
 
