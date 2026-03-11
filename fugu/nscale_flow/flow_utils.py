@@ -3,8 +3,45 @@ import numpy as np
 from matplotlib.path import Path
 import random
 
+NSCALE_PATH = "/Users/kamerongano/Documents/GitHub/nscale/configs/distinct_demo/"
 
-
+def scaffold_to_network_json(graph, timestamps, path):
+    # json file
+    network_json = {}
+    network_json['ticks'] = timestamps
+    network_json['neuron_dict'] = {}
+    network_json['synapse_dict'] = {}
+    
+    for i, neuron in enumerate(sorted(graph.nodes)):
+        neuron_info = graph.nodes[neuron]
+        network_json['neuron_dict'][str(neuron_info['neuron_number'])] = {"fan-in": [],
+                                                                     "fan-out": [],
+                                                                     "th": neuron_info['threshold'],
+                                                                     "leak": 0.0,
+                                                                     "bias": 0.0,
+                                                                     "refractory period": 0,
+                                                                     "prob": neuron_info['p']
+                                                                    }
+        if 'leakage_constant' in neuron_info:
+            network_json['neuron_dict'][str(neuron_info['neuron_number'])]['leak'] = neuron_info['leakage_constant']
+        if 'bias' in neuron_info:
+            network_json['neuron_dict'][str(neuron_info['neuron_number'])]['bias'] = neuron_info['bias'] 
+        if 'refractory_period' in neuron_info:
+            network_json['neuron_dict'][str(neuron_info['neuron_number'])]['refractory_period'] = neuron_info['refractory_period']    
+    
+    for i, synapse in enumerate(graph.edges):
+        pre_neuron = graph.nodes[synapse[0]]['neuron_number']
+        post_neuron = graph.nodes[synapse[1]]['neuron_number']
+        network_json['neuron_dict'][str(post_neuron)]['fan-in'].append(pre_neuron)
+        network_json['neuron_dict'][str(pre_neuron)]['fan-out'].append(post_neuron)
+        if str(post_neuron) not in network_json['synapse_dict']:
+            network_json['synapse_dict'][str(post_neuron)] = {}
+        if str(pre_neuron) not in network_json['synapse_dict'][str(post_neuron)]:
+            network_json['synapse_dict'][str(post_neuron)][str(pre_neuron)] = {}
+        network_json['synapse_dict'][str(post_neuron)][str(pre_neuron)][str(len(network_json['synapse_dict'][str(post_neuron)][str(pre_neuron)]))] = {'fixed-wt': graph.edges[synapse]['weight'],
+                                                                                                                                                      'delay': graph.edges[synapse]['delay']}
+    with open(path, 'w') as f:
+        json.dump(network_json, f) 
 
 def generate_random_balanced_mapping(neuron_ids, num_cores=4, seed=42):
     rng = random.Random(seed)
@@ -26,8 +63,6 @@ def generate_random_balanced_mapping(neuron_ids, num_cores=4, seed=42):
         start += size
 
     return mapping
-
-# ...existing code...
 
 
 def generate_random_mapping(neuron_ids, num_cores=4, seed=42, to_file=True, file_path='core_mappings.json'):
@@ -63,9 +98,14 @@ def load_network(path='network.json'):
         return json.load(f)
 
 
-def write_json(path, payload):
+def write_json(path, payload, save_to_nscale=True):
     with open(path, 'w') as f:
+        print(f"Writing {path}... to local directory.")
         json.dump(payload, f)
+    if save_to_nscale:
+        with open(NSCALE_PATH + path, 'w') as f:
+            print(f"Writing {NSCALE_PATH + path}... to NeuroScale config.")
+            json.dump(payload, f)
 
 
 def build_core_mappings(neuron_ids, num_cores=4, seed=42):
@@ -341,7 +381,8 @@ def generate_act_network_assets(
     seed=42,
     balanced=True,
     core_size_x=2,
-    core_size_y=2
+    core_size_y=2,
+    save_to_nscale=True,
 ):
     network = load_network(network_path)
     neuron_ids = sorted(network["neuron_dict"], key=lambda x: int(x))
@@ -351,10 +392,10 @@ def generate_act_network_assets(
         num_cores=num_cores,
         seed=seed
     )
-    write_json(mapping_file, core_mappings)
+    write_json(mapping_file, core_mappings, save_to_nscale=save_to_nscale)
 
     network_fanin = build_network_fanin(network, core_mappings)
-    write_json(fanin_file, network_fanin)
+    write_json(fanin_file, network_fanin, save_to_nscale=save_to_nscale)
 
     cluster_size_x, cluster_size_y = get_cluster_sizes(network_fanin)
 
@@ -392,8 +433,8 @@ def generate_act_network_assets(
 
     stats = compute_network_stats(network_act)
 
-    write_json(act_file, network_act)
-    write_json(fanin_updated_file, network_fanin)
+    write_json(act_file, network_act, save_to_nscale=save_to_nscale)
+    write_json(fanin_updated_file, network_fanin, save_to_nscale=save_to_nscale)
     write_expected_grid_size(grid_size_file, cluster_size_x, cluster_size_y)
 
     print("successfully generate act_json/act_network.json")
