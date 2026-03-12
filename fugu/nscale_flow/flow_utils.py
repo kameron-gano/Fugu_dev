@@ -2,8 +2,56 @@ import json
 import numpy as np
 from matplotlib.path import Path
 import random
+import os
 
 NSCALE_PATH = "/Users/kamerongano/Documents/GitHub/nscale/configs/distinct_demo/"
+
+def spikes_to_json(result_dict, num_neurons):
+    matrix = result_dict.to_numpy()
+    spike_times = {}
+    for i in range(num_neurons):
+        spike_times[i] = []
+    for i in matrix:
+        spike_times[i[1]].append(int(i[0]))
+    return spike_times
+
+def compare_spike_json_files(
+    spikes_fugu_file="spikes_fugu.json",
+    spikes_vanilla_file="spikes_vanilla.json",
+):
+    fugu_path = os.path.expanduser(spikes_fugu_file)
+    vanilla_path = os.path.expanduser(spikes_vanilla_file)
+
+    with open(fugu_path, "r") as f:
+        spikes_fugu = json.load(f)
+    with open(vanilla_path, "r") as f:
+        spikes_vanilla = json.load(f)
+
+    # normalize keys/values
+    spikes_fugu = {int(k): [int(t) for t in v] for k, v in spikes_fugu.items()}
+    spikes_vanilla = {int(k): [int(t) for t in v] for k, v in spikes_vanilla.items()}
+
+    all_neurons = sorted(set(spikes_fugu.keys()) | set(spikes_vanilla.keys()))
+    mismatches = []
+
+    for nid in all_neurons:
+        f = spikes_fugu.get(nid, [])
+        v = spikes_vanilla.get(nid, [])
+        if f != v:
+            mismatches.append(
+                {
+                    "neuron": nid,
+                    "fugu": f,
+                    "vanilla": v,
+                }
+            )
+
+    return {
+        "match": len(mismatches) == 0,
+        "num_neurons_compared": len(all_neurons),
+        "num_mismatches": len(mismatches),
+        "mismatches": mismatches,
+    }
 
 def scaffold_to_network_json(graph, timestamps, path):
     # json file
