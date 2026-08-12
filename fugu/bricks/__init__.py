@@ -18,3 +18,5 @@ from .mock_bricks import Mock_Brick, Mock_Input
 from .lca_bricks import LCABrick
 from .loihi_gs_brick import LoihiGSBrick
 from .noops_bricks import NoOps
+from .random_walker_bricks import RandomWalker
+
